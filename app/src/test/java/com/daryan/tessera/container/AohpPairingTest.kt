@@ -28,6 +28,12 @@ class AohpPairingTest {
         val bare = AohpTarget(7400, "t")
         assertEquals("7400 t", bare.toLine())
         assertEquals(bare, AohpTarget.parse(bare.toLine()))
+        // An env whose launch script gives each app a /dev of its own says so.
+        val own = AohpTarget.parse("7400 t x=host dev=private")
+        assertEquals(AohpTarget(7400, "t", hostX = true, privateDev = true), own)
+        assertEquals("7400 t x=host dev=private", own?.toLine())
+        assertEquals(false, AohpTarget.parse("7400 t x=host")?.privateDev)
+        assertNull(AohpTarget.parse("7400 t dev=shared"))
     }
 
     @Test

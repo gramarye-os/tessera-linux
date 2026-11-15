@@ -19,7 +19,9 @@ import java.net.Socket
  * [vulkanIcd] is the env's own Turnip driver (the ICD file of a Mesa built for Android's GPU
  * device): hardware graphics there use the env's Mesa, not this app's bundle. [glDriver] is a
  * native OpenGL driver for that device in the same Mesa. [hostX] says the env can start the
- * session's X server on its own side, which is what lets a client hand it buffers.
+ * session's X server on its own side, which is what lets a client hand it buffers. [privateDev]
+ * says its launch script gives each app a /dev of its own, with the app's devices and none of the
+ * env's others.
  */
 data class AohpTarget(
     val port: Int,
@@ -27,10 +29,13 @@ data class AohpTarget(
     val vulkanIcd: String? = null,
     val glDriver: String? = null,
     val hostX: Boolean = false,
+    val privateDev: Boolean = false,
 ) {
     /** What the env can do, as the words [parse] reads after the token. */
     val caps: String
-        get() = listOfNotNull(vulkanIcd?.let { "vk=$it" }, glDriver?.let { "gl=$it" }, "x=host".takeIf { hostX }).joinToString(" ")
+        get() = listOfNotNull(
+            vulkanIcd?.let { "vk=$it" }, glDriver?.let { "gl=$it" }, "x=host".takeIf { hostX }, "dev=private".takeIf { privateDev },
+        ).joinToString(" ")
 
     /** The agent file's line for this, which [parse] reads back. */
     fun toLine(): String = "$port $token $caps".trimEnd()
@@ -43,7 +48,7 @@ data class AohpTarget(
         private val WORD = Regex("[A-Za-z0-9_-]{1,32}")
 
         /**
-         * From the agent file's one line, "<port> <token> [vk=<icd file>] [gl=<driver>] [x=host]";
+         * From the agent file's one line, "<port> <token> [vk=<icd file>] [gl=<driver>] [x=host] [dev=private]";
          * null when it isn't that. A bare path in third place is the ICD file, as older installers
          * wrote it.
          */
@@ -59,6 +64,7 @@ data class AohpTarget(
                     word.startsWith("vk=/") -> target.copy(vulkanIcd = value)
                     word.startsWith("gl=") && WORD.matches(value) -> target.copy(glDriver = value)
                     word == "x=host" -> target.copy(hostX = true)
+                    word == "dev=private" -> target.copy(privateDev = true)
                     else -> return null
                 }
             }
@@ -137,7 +143,9 @@ class AohpBackend(
 
     override fun enforcement(capability: Capability, app: PermissionManifest) = when {
         app.permissions.root -> Enforcement.ADVISORY
-        capability == Capability.DEVICES -> Enforcement.ADVISORY
+        // An app's devices are all it finds in /dev where the env's launch script makes it one
+        // of its own; an older script leaves it the env's, every node of the phone.
+        capability == Capability.DEVICES && !target.privateDev -> Enforcement.ADVISORY
         else -> Enforcement.ENFORCED
     }
 

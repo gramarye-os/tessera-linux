@@ -12,6 +12,8 @@
 #   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, XAUTH, XDIR, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
 # Everything mounted here lives in a mount namespace this script makes for itself and vanishes
 # with it; the env's own mounts are never touched.
+# An app that doesn't run as root gets a /dev of its own, with the devices it was granted in it
+# and none of the env's others (see "A /dev of the app's own" below).
 set -e
 
 SID=${1:?session id missing}
@@ -67,6 +69,73 @@ share() {
 
 # Every app has its own /tmp and /dev/shm, so apps can't see each other's sockets.
 mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+
+# A /dev of the app's own. An env's /dev is the phone's: every device node Android has, the
+# cameras, the input devices and Android's binder among them, held back from an app by each
+# node's owner and mode alone. The app gets a new one instead, with
+# - what any program counts on: null, zero, full, random, urandom, tty, terminals (ptmx, pts),
+#   fd and the three standard streams, shm, and fuse;
+# - the GPU's nodes, which Android itself lets every app open;
+# - the devices the app was granted (DEVICES, and all of USB with USB_ALL), each as the env has
+#   it: a bind keeps the node's owner, mode and label, so the group that opens it is still the
+#   one added below;
+# - /dev/v4l/by-id and by-path, which udev would make and an env has nobody to: links to the
+#   cameras among the granted devices, or empty. OBS Studio as Debian builds it ends in a double
+#   free without the folders.
+# The app can't make nodes of its own (no CAP_MKNOD, and its /tmp is nodev) or uncover the env's
+# /dev beneath this one, which makes the list of its devices a limit and not a hint. A node
+# replaced while the app runs (a camera unplugged and plugged in again) is the new one only to
+# the app's next start.
+# Not for an app that runs as root: root in the env can undo all of it, and is how the env's own
+# devices are looked after.
+#
+# Puts the env's $1, a node or a folder under /dev, at its own name in the /dev being built in
+# $D. What isn't there, or what this env may not look at, is left out.
+give() {
+  case "$1" in /dev/?*) ;; *) return 0 ;; esac
+  case "/$1/" in */../*|*/./*) return 0 ;; esac
+  g=$D/${1#/dev/}
+  if [ -e "$g" ] || [ -L "$g" ]; then return 0; fi
+  if [ -d "$1" ]; then
+    mkdir -p "$g" && mount --rbind "$1" "$g" || { rmdir "$g" 2>/dev/null; echo "tessera: couldn't give the app $1" >&2; }
+  elif [ -e "$1" ]; then
+    mkdir -p "${g%/*}" && : > "$g" && mount --bind "$1" "$g" || { rm -f "$g"; echo "tessera: couldn't give the app $1" >&2; }
+  fi
+  return 0
+}
+if [ "$RUN_AS_ROOT" != 1 ]; then
+  D=/tmp/.tessera-dev
+  mkdir "$D" && mount -t tmpfs -o mode=755,nosuid tmpfs "$D" ||
+    { echo "tessera: couldn't make a /dev for this app; not starting it" >&2; exit 1; }
+  for n in null zero full random urandom tty pts fuse kgsl-3d0 dri dma_heap udmabuf; do give "/dev/$n"; done
+  # The node that hands out terminals looks for them in "pts" beside itself, in its own
+  # filesystem: the env's node bound here wouldn't find any (ENOENT), so this is a node of this
+  # /dev. Where one can't be made, the one inside pts will do for most programs.
+  mknod -m 666 "$D/ptmx" c 5 2 2>/dev/null || ln -s pts/ptmx "$D/ptmx"
+  ln -s /proc/self/fd "$D/fd"
+  ln -s /proc/self/fd/0 "$D/stdin"
+  ln -s /proc/self/fd/1 "$D/stdout"
+  ln -s /proc/self/fd/2 "$D/stderr"
+  mkdir -p "$D/shm" "$D/v4l/by-id" "$D/v4l/by-path"
+  printf '%s\n' "$DEVICES" | while IFS= read -r d; do [ -z "$d" ] || give "$d"; done
+  if [ "$USB_ALL" = 1 ]; then
+    give /dev/bus/usb
+    for t in /dev/ttyACM*; do give "$t"; done
+  fi
+  mount --move "$D" /dev || { echo "tessera: couldn't give this app its /dev; not starting it" >&2; exit 1; }
+  rmdir "$D" 2>/dev/null || true
+  # The cameras among them, by the names udev would give (v4l_links.py, beside this script).
+  V4L=$(dirname "$0")/v4l_links.py
+  VIDS=
+  for v in /dev/video[0-9]*; do if [ -c "$v" ]; then VIDS="$VIDS ${v#/dev/}"; fi; done
+  if [ -n "$VIDS" ] && [ -f "$V4L" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$V4L" $VIDS 2>/dev/null | while read -r name node; do
+      case "$name" in by-id/?*|by-path/?*) ;; *) continue ;; esac
+      case "$name$node" in *..*|*/*/*) continue ;; esac
+      ln -s "../../$node" "/dev/v4l/$name" 2>/dev/null || true
+    done
+  fi
+fi
 mkdir -p /dev/shm
 # Keep POSIX shared-memory files on a private tmpfs instead of the container-wide /dev/shm.
 mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
@@ -186,14 +255,20 @@ fi
 [ ! -f /etc/shadow ] || grep -q '^user:' /etc/shadow || echo 'user:!:19000::::::' >> /etc/shadow
 
 # Supplementary groups: Android's network groups when network is granted, and the group of each
-# granted device, so the app can open just those (not "system", 1000, which system services trust).
+# granted device, so the app can open just those. Of device nodes in the app's /dev only: a path
+# elsewhere in the list would have lent the app that file's group. And never "system" (1000),
+# which system services trust, or root's (0), which reads what is kept from other users.
 GROUPS_LIST=$NET_GROUPS
 DEV_GROUPS=$({
   printf '%s\n' "$DEVICES"
   if [ "$USB_ALL" = 1 ]; then find /dev/bus/usb -type c 2>/dev/null; ls /dev/ttyACM* 2>/dev/null; fi
 } | while IFS= read -r d; do
-  [ -n "$d" ] && [ -e "$d" ] && stat -c %g "$d"
-done | grep -vx 1000 | sort -u | tr '\n' ',' | sed 's/,$//')
+  case "$d" in /dev/?*) ;; *) continue ;; esac
+  case "/$d/" in */../*|*/./*) continue ;; esac
+  if [ -d "$d" ]; then find "$d" \( -type c -o -type b \) -exec stat -c %g {} + 2>/dev/null || true
+  elif [ -c "$d" ] || [ -b "$d" ]; then stat -c %g "$d"
+  fi
+done | grep -vx -e 0 -e 1000 | sort -u | tr '\n' ',' | sed 's/,$//')
 [ -n "$DEV_GROUPS" ] && GROUPS_LIST=${GROUPS_LIST:+$GROUPS_LIST,}$DEV_GROUPS
 if [ -n "$GROUPS_LIST" ]; then GROUP_ARG="--groups=$GROUPS_LIST"; else GROUP_ARG=--clear-groups; fi
 
