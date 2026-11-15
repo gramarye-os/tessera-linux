@@ -1,0 +1,8 @@
+# Debian trixie arm64 with what Debian's own Mesa needs to build: the lfdevs CI's recipe
+# (.github/workflows/build-check.yml, job debian-trixie). gramarye/mesa/build.sh builds and uses it.
+FROM docker.io/library/debian:trixie-slim
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get build-dep -y mesa \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ccache libxfixes-dev libarchive-dev ca-certificates \
+ && apt-get clean

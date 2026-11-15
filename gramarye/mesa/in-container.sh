@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Chris Anderson
+# SPDX-License-Identifier: Apache-2.0
+#
+# The part of build.sh that runs inside the arm64 container: configure (once), build, stage, tar.
+# The options are the lfdevs CI's at this revision (.github/workflows/build-check.yml, job
+# debian-trixie), with freedreno-kmds=msm,kgsl in place of kgsl.
+set -euo pipefail
+git config --global --add safe.directory "*"
+cd /src
+if [ ! -f /out/build/build.ninja ]; then
+  meson setup /out/build /src \
+    --prefix=/usr \
+    -Dplatforms=x11,wayland \
+    -Dgallium-drivers=freedreno,zink,virgl,llvmpipe \
+    -Dgallium-va=disabled \
+    -Dgallium-mediafoundation=disabled \
+    -Dvulkan-drivers=freedreno \
+    -Dvulkan-layers= \
+    -Degl=enabled \
+    -Dgles2=enabled \
+    -Dglvnd=enabled \
+    -Dglx=dri \
+    -Dlibunwind=disabled \
+    -Dintel-rt=disabled \
+    -Dmicrosoft-clc=disabled \
+    -Dvalgrind=disabled \
+    -Dgles1=disabled \
+    -Dfreedreno-kmds=msm,kgsl \
+    -Dbuildtype=release
+fi
+ninja -C /out/build -j"${JOBS:-$(nproc)}"
+rm -rf /out/stage
+DESTDIR=/out/stage meson install -C /out/build --no-rebuild > /out/install.log
+ver=$(grep -v "^[[:space:]]*$" VERSION | head -n1)
+name=mesa-kgsl_${ver}-g$(git rev-parse --short=10 HEAD)_debian_trixie_arm64.tar.gz
+tar -czf "/out/dist/$name" -C /out/stage .
+cd /out/dist && sha256sum "$name" | tee "$name.sha256"
