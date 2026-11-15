@@ -19,7 +19,12 @@ import java.io.IOException
 class X11Server(private val context: Context, private val paths: ContainerPaths) {
 
     /** Starts the server for [session]. Returns once its socket accepts connections. */
-    suspend fun start(session: Session): Process {
+    /**
+     * [tcp]: also listen on loopback TCP (port 6000 + display), for a guest that shares this
+     * phone's network but can't see the session's folder ([AohpBackend]). Access control is off
+     * for those sessions until they carry a cookie: anything on the phone can reach that port.
+     */
+    suspend fun start(session: Session, tcp: Boolean = false): Process {
         val display = session.display ?: throw IllegalArgumentException("session has no display")
         val xkb = installXkb()
         // In chroot mode clients run as uid 1000, not as the app; let them reach the socket.
@@ -36,8 +41,10 @@ class X11Server(private val context: Context, private val paths: ContainerPaths)
         val log = StringBuilder()
         val logLock = Any()
         val proc = ProcessBuilder(
-            "/system/bin/app_process", "/", CmdEntryPoint::class.java.name,
-            ":$display", "-tag", windowTag(session),
+            listOf(
+                "/system/bin/app_process", "/", CmdEntryPoint::class.java.name,
+                ":$display", "-tag", windowTag(session),
+            ) + if (tcp) listOf("-listen", "tcp", "-ac") else emptyList(),
         ).redirectErrorStream(true).apply {
             environment()["CLASSPATH"] = context.applicationInfo.sourceDir
             // We extract native libs (PRoot needs that), so lorie can't dlopen from the APK.

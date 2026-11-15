@@ -113,6 +113,8 @@ enum class BackendMode(val label: String, val short: String) {
     CHROOT("Chroot (root)", "Chroot"),
     /** A container the user made with Droidspaces; which one is [LauncherViewModel.selectContainer]'s. */
     DROIDSPACES("Droidspaces (root)", "Droidspaces"),
+    /** A gramarye (AOHP) env, through the Tessera agent running inside it. */
+    AOHP("Gramarye env", "Gramarye"),
 }
 
 /** A launcher tab: either a category from the manifests or one the user made. */
@@ -652,7 +654,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 rootGranted = true
                 prefs.edit().putBoolean(KEY_ROOT_GRANTED, true).apply()
             }
-            if (s.su == null && _mode.value != BackendMode.PROOT) _mode.value = BackendMode.PROOT
+            // A gramarye env is reached through its agent, not su.
+            if (s.su == null && _mode.value != BackendMode.PROOT && _mode.value != BackendMode.AOHP) _mode.value = BackendMode.PROOT
             // Chroot sessions an earlier run of the app left behind (an update, being killed):
             // once a run, before anything starts. Only root can see them.
             if (_mode.value != BackendMode.PROOT && s.su != null && !container.chrootSwept && sessions.sessions.value.none { it.running }) {
@@ -841,6 +844,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 container.droidspaces(s.su, binary, target)
             } else null
         }
+        BackendMode.AOHP -> container.aohp()
     }
 
     /** Why [mode] cannot launch apps yet, or null when it can. */
@@ -848,6 +852,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         status == null -> "Checking the system"
         mode == BackendMode.PROOT && !status.prootBinary -> "PRoot isn't bundled in this build yet"
         mode == BackendMode.PROOT && !status.prootRootfs -> "No Linux system installed yet"
+        mode == BackendMode.AOHP && container.aohpTarget() == null -> "No gramarye env is set up for Tessera yet"
         mode == BackendMode.CHROOT && status.su == null -> "Root access not found"
         mode == BackendMode.CHROOT && status.chrootRootfs == false -> "No Linux system for chroot mode yet"
         mode == BackendMode.DROIDSPACES && status.su == null -> "Root access not found"

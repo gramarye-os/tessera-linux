@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Process
 import com.termux.x11.LorieApp
 import kotlin.math.roundToInt
+import com.daryan.tessera.container.AohpBackend
+import com.daryan.tessera.container.AohpTarget
 import com.daryan.tessera.container.ChrootBackend
 import com.daryan.tessera.container.DroidspacesBackend
 import com.daryan.tessera.container.DroidspacesContainer
@@ -251,6 +253,11 @@ class LauncherContainer(private val app: Application) {
     fun chroot(su: String) = ChrootBackend(paths, su, dns = { HostDns.servers(app) })
     fun droidspaces(su: String, binary: String, target: DroidspacesContainer) =
         DroidspacesBackend(paths, su, binary, target)
+
+    /** The gramarye env named by [AohpBackend.AGENT_FILE], when there is one. */
+    fun aohpTarget(): AohpTarget? =
+        runCatching { AohpTarget.parse(java.io.File(app.filesDir, AohpBackend.AGENT_FILE).readText()) }.getOrNull()
+    fun aohp(): AohpBackend? = aohpTarget()?.let { AohpBackend(paths, it) }
 
     companion object {
         const val PREFS = "launcher"

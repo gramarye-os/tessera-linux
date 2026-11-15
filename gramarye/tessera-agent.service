@@ -1,0 +1,10 @@
+[Unit]
+Description=Tessera agent: starts the apps Tessera (the Android launcher) asks for in this env
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/tessera/agent.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=aohp.target
