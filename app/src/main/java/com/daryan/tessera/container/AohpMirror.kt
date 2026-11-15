@@ -50,6 +50,9 @@ internal class MirrorFrame(val verb: Char, val name: String, val data: ByteArray
  * can't reach. So the env's agent sends what the helpers write, and it lands in [dir] as if
  * they had written it here; and what the launcher puts in [dir] is sent to the agent: bytes
  * written to the command pipes, and the theme's files whenever `portal`, written last, changes.
+ * The session's sound comes the same way: the env's sound server plays into a pipe there, the
+ * agent sends what it plays, and it goes into a pipe of the same name here, which [AudioPipe]
+ * plays from as it does for the other engines.
  * Everything else in the launcher works on [dir] as it does for any other engine.
  */
 internal class SessionMirror(private val socket: Socket, private val dir: File) {
@@ -58,6 +61,7 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
     private val acks = LinkedBlockingQueue<String>()
     @Volatile private var closed = false
     private var reader: Thread? = null
+    private var sound: Sound? = null
 
     /** The theme's files as last sent, by path under [dir], and `portal`'s stamp then. */
     private val sent = HashMap<String, Long>()
@@ -69,6 +73,7 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
      * launched after this reads it there.
      */
     fun start() {
+        sound = Sound(File(dir, AUDIO_FIFO_NAME))
         reader = Thread({ receive() }, "tessera-mirror-in").apply { isDaemon = true; start() }
         try {
             pushTheme()
@@ -118,10 +123,73 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
                     'F' -> if (frame.name in WHOLE) replace(frame.name, frame.data)
                     'A' -> if (frame.name in APPENDED) FileOutputStream(File(dir, frame.name), true).use { it.write(frame.data) }
                     'S' -> acks.offer(frame.name)
+                    'U' -> if (frame.name == AUDIO_FIFO_NAME) sound?.play(frame.data)
                 }
             }
         } catch (e: IOException) {
             if (!closed && !socket.isClosed) Log.w(TAG, "lost the env's side of ${dir.parentFile?.name}", e)
+        } finally {
+            // The agent hung up, or this was closed: nothing more comes, and the sound's pipe
+            // must lose its writer for its player to end.
+            closed = true
+        }
+    }
+
+    /**
+     * The session's sound on its way to [AudioPipe]: a pipe at [file], as the session's sound
+     * server makes it for the other engines, and a thread that writes into it what the agent sent.
+     * This end stays open for reading too, so the player's open never waits and its read never
+     * ends while the session lasts.
+     *
+     * Sound that can't be written in time is dropped, oldest first, and not kept: the env's
+     * clock and the phone's sound hardware don't agree exactly, and what waits is heard late
+     * from then on. Pieces are whole frames (the agent sees to that), so dropping one doesn't
+     * swap left and right.
+     */
+    private inner class Sound(file: File) {
+        private val pieces = java.util.concurrent.LinkedBlockingDeque<ByteArray>()
+        private val waiting = java.util.concurrent.atomic.AtomicInteger()
+        private val pipe: FileDescriptor? = runCatching {
+            if (!file.exists()) Os.mkfifo(file.path, "600".toInt(8))
+            Os.open(file.path, OsConstants.O_RDWR or OsConstants.O_NONBLOCK, 0)
+        }.onFailure { Log.w(TAG, "no pipe for the session's sound", it) }.getOrNull()
+
+        init {
+            if (pipe != null) Thread({ write(pipe) }, "tessera-mirror-sound").apply { isDaemon = true; start() }
+        }
+
+        fun play(data: ByteArray) {
+            if (pipe == null || data.isEmpty()) return
+            pieces.addLast(data)
+            var held = waiting.addAndGet(data.size)
+            while (held > MAX_WAITING) {
+                val dropped = pieces.pollFirst() ?: break
+                held = waiting.addAndGet(-dropped.size)
+            }
+        }
+
+        private fun write(pipe: FileDescriptor) {
+            val ready = arrayOf(StructPollfd().apply { fd = pipe; events = OsConstants.POLLOUT.toShort() })
+            try {
+                while (!closed) {
+                    val piece = pieces.pollFirst(200, TimeUnit.MILLISECONDS) ?: continue
+                    waiting.addAndGet(-piece.size)
+                    var at = 0
+                    while (at < piece.size && !closed) {
+                        try {
+                            at += Os.write(pipe, piece, at, piece.size - at)
+                        } catch (e: ErrnoException) {
+                            // Full: the player isn't taking it yet, or there is none.
+                            if (e.errno != OsConstants.EAGAIN) return
+                            pollQuietly(ready, 100)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+            } catch (_: InterruptedException) {
+            } finally {
+                runCatching { Os.close(pipe) }
+            }
         }
     }
 
@@ -187,9 +255,9 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
         }
     }
 
-    private fun pollQuietly(fds: Array<StructPollfd>) {
+    private fun pollQuietly(fds: Array<StructPollfd>, timeoutMs: Int = POLL_MS) {
         try {
-            Os.poll(fds, POLL_MS)
+            Os.poll(fds, timeoutMs)
         } catch (_: ErrnoException) {
             fds.forEach { it.revents = 0 }
         }
@@ -231,6 +299,8 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
         private const val TAG = "SessionMirror"
         private const val POLL_MS = 500
         private const val SYNC_MS = 5_000L
+        /** A sixth of a second of 48 kHz stereo: more than that waiting is sound heard late. */
+        private const val MAX_WAITING = 32 * 1024
         private val NOTHING = ByteArray(0)
 
         /** The names the agent knows too (gramarye/agent.py). */

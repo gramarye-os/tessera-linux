@@ -75,6 +75,10 @@ MIRROR_WHOLE = ("launcher-windows", "launcher-desktop-items")
 MIRROR_APPENDED = ("launcher-focus", "launcher-notify", "launcher-desktop-events")
 MIRROR_PIPES = ("launcher-wincmd", "launcher-notifycmd", "launcher-desktop")
 MIRROR_TREE = "tessera-theme"
+# The pipe the session's sound server plays into (16-bit stereo), and how much of it may wait in
+# the pipe: what waits is heard late.
+MIRROR_SOUND = "launcher-audio"
+SOUND_PIPE = 16 * 1024
 MAX_FILE = 8 * 1024 * 1024
 MAX_NAME = 1024
 ABI_DIR = {"aarch64": "arm64", "x86_64": "x86_64", "armv7l": "arm", "armv8l": "arm", "i686": "x86"}
@@ -385,6 +389,40 @@ class Reports:
                 os.close(fd)
 
 
+def open_sound(base_fd):
+    """The pipe the session's sound server plays into, open for reading; None while there is none.
+    The session made it and can put anything under its name: a pipe, not a link, or nothing."""
+    try:
+        fd = os.open(MIRROR_SOUND, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=base_fd)
+    except OSError:
+        return None
+    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    try:
+        fcntl.fcntl(fd, getattr(fcntl, "F_SETPIPE_SZ", 1031), SOUND_PIPE)
+    except OSError:
+        pass
+    return fd
+
+
+def changed(ifd):
+    """The names in the folder that the inotify descriptor says something happened to."""
+    names = set()
+    while True:
+        try:
+            buf = os.read(ifd, 65536)
+        except OSError:
+            return names
+        if not buf:
+            return names
+        at = 0
+        while at + 16 <= len(buf):
+            size = struct.unpack_from("iIII", buf, at)[3]
+            names.add(buf[at + 16:at + 16 + size].split(b"\0", 1)[0].decode("utf-8", "replace"))
+            at += 16 + size
+
+
 def mirror(conn, sid, base):
     """Keeps the session's X folder (base) and the launcher's copy of it in step, until the
     launcher hangs up. The session's helpers and the launcher talk through files in that folder,
@@ -393,6 +431,8 @@ def mirror(conn, sid, base):
 
       to the launcher    F <file>  a file a helper replaced whole (the window list)
                          A <file>  what a helper appended to a file (focus, notifications)
+                         U <pipe>  what the session plays: the sound its sound server wrote
+                                   into its pipe, in whole 16-bit stereo frames
                          S <mark>  answers the launcher's S: everything before it is done
       from the launcher  P <path>  a file of the session's theme, under tessera-theme/
                          D <path>  one that is gone, or a folder of them
@@ -409,9 +449,19 @@ def mirror(conn, sid, base):
         if ifd is not None:
             poller.register(ifd, select.POLLIN)
         buf = bytearray()
+        sound = None
+        played = b""
+        watched = set(MIRROR_WHOLE + MIRROR_APPENDED)
+        # Without inotify, look often enough that a window list or a keyboard isn't late.
+        every = 2.0 if ifd is not None else 0.1
+        looked = 0.0
         while True:
-            # Without inotify, look often enough that a window list or a keyboard isn't late.
-            events = dict(poller.poll(2000 if ifd is not None else 100))
+            if sound is None:
+                sound = open_sound(base_fd)
+                if sound is not None:
+                    poller.register(sound, select.POLLIN)
+                    log("x", sid, "mirror: sound")
+            events = dict(poller.poll(int(every * 1000)))
             ev = events.get(conn.fileno(), 0)
             if ev & select.POLLIN:
                 try:
@@ -447,17 +497,41 @@ def mirror(conn, sid, base):
                             conn.sendall(frame(b"S", name))
             elif ev:
                 return
-            if ifd is not None and ifd in events:
+            if sound is not None and sound in events:
                 try:
-                    while os.read(ifd, 65536):
-                        pass
+                    data = os.read(sound, 65536)
+                except BlockingIOError:
+                    data = None
                 except OSError:
-                    pass
-            reports.scan(conn.sendall)
+                    data = b""
+                if data:
+                    # Whole frames only: the launcher may drop a piece that comes too late, and
+                    # half a frame gone would swap left and right from there on.
+                    played += data
+                    whole = len(played) & ~3
+                    if whole:
+                        conn.sendall(frame(b"U", MIRROR_SOUND.encode(), played[:whole]))
+                        played = played[whole:]
+                elif data == b"":
+                    # The sound server is gone; another may make the pipe anew.
+                    poller.unregister(sound)
+                    os.close(sound)
+                    sound = None
+                    played = b""
+            # Sound arrives some fifty times a second, and each piece shows as a change in the
+            # folder: the reports are looked at when one of them changed, or now and then.
+            due = time.monotonic() - looked >= every
+            if ifd is not None and ifd in events:
+                due = bool(changed(ifd) & watched) or due
+            if due:
+                looked = time.monotonic()
+                reports.scan(conn.sendall)
     finally:
         os.close(base_fd)
         if ifd is not None:
             os.close(ifd)
+        if sound is not None:
+            os.close(sound)
 
 
 def handle_x(conn, peer, parts):
