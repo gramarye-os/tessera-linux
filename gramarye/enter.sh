@@ -166,6 +166,9 @@ fi
 # "system", which system services trust. The app's uid carries no rights beyond the app's, and
 # is what the other engines run apps as too.
 U=${APP_UID:?APP_UID not set}
+# The session's terminal is the agent's, root's: an app that opens it by name (not as /dev/tty)
+# needs it to be its own.
+if [ -t 0 ]; then T=$(tty 2>/dev/null) && chown "$U" "$T" 2>/dev/null || true; fi
 SETPRIV=$(command -v setpriv || true)
 [ -n "$SETPRIV" ] || { echo "setpriv (util-linux) isn't in this container" >&2; exit 127; }
 # Give the uid a name. Without one, D-Bus won't start ("Could not get password database

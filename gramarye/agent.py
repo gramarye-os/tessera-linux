@@ -7,6 +7,10 @@ Tessera has no root on the phone and the env cannot see Tessera's folders, so la
 over the loopback interface the env shares with Android. One connection is one session:
 
     TESSERA1 <token> <session id> <base64 settings>\n     then the session's terminal, both ways
+    TESSERA2 <token> <session id> <settings> <rows> <columns>\n
+                                              the same session on a terminal of its own, of that
+                                              size (0 0: none, pipes), spoken to in frames: see
+                                              serve_session()
     TESSERAX1 <token> <session id> <display> <window tag> <android package>\n
                                               the session's X server, started on the env's side;
                                               answered READY or FAILED <why>, stopped on hang-up
@@ -19,6 +23,8 @@ The session runs under enter.sh in its own PID namespace; when the connection cl
 ends its process group, and the namespace goes with it.
 """
 import ctypes
+import errno
+import fcntl
 import hmac
 import os
 import re
@@ -27,8 +33,10 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 
@@ -467,6 +475,179 @@ def handle_x(conn, peer, parts):
         x_stop(sid)
 
 
+def set_size(fd, rows, cols):
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except OSError:
+        pass
+
+
+def new_terminal(rows, cols):
+    """A terminal for a session, as a (master, slave) pair: the launcher's own is in raw mode,
+    so this one does the line editing, echo and signals."""
+    master, slave = os.openpty()
+    try:
+        attrs = termios.tcgetattr(slave)
+        attrs[0] |= getattr(termios, "IUTF8", 0x4000)  # Backspace takes a whole character
+        attrs[0] &= ~(termios.IXON | termios.IXOFF)  # Ctrl+S and Ctrl+Q are the app's
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    except termios.error:
+        pass
+    set_size(master, rows, cols)
+    return master, slave
+
+
+def serve_session(conn, sid, argv, env, rows, cols):
+    """Runs a session and carries its input and output until it ends or the launcher hangs up;
+    returns the process. Both ends send frames: a type byte, the payload's length as four
+    bytes (big endian), the payload.
+
+      from the launcher  D bytes typed       W rows, columns (two bytes each): the size changed
+                         E the input ended
+      to the launcher    D the app's output  X its exit status (four bytes, signed; -n: signal n)
+
+    With rows and columns the session gets a terminal of that size, which it takes as its
+    controlling terminal (enter.sh); with 0 0 it gets pipes.
+    """
+    master = None
+    if rows and cols:
+        master, slave = new_terminal(rows, cols)
+        try:
+            # A group of its own (end() kills by group) but not a session: a shell that leads a
+            # session with no terminal can end up owning this one, and the app, which is to
+            # own it (enter.sh's setsid --ctty), could then only take it away as root.
+            proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, process_group=0,
+                                    close_fds=True, cwd="/", env=env)
+        except BaseException:
+            os.close(master)
+            raise
+        finally:
+            os.close(slave)
+        in_fd = out_fd = master
+    else:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                start_new_session=True, close_fds=True, cwd="/", env=env, bufsize=0)
+        in_fd, out_fd = proc.stdin.fileno(), proc.stdout.fileno()
+    log("session", sid, "pid", proc.pid, "terminal %dx%d" % (cols, rows) if master is not None else "pipes")
+    lock = threading.Lock()
+    drained = threading.Event()
+    gone = threading.Event()  # the launcher hung up
+
+    def send(kind, data=b""):
+        with lock:
+            conn.sendall(kind + struct.pack(">I", len(data)) + data)
+
+    def pump_out():
+        # Until every process of the session has let go of its end: read then fails (a terminal)
+        # or ends (a pipe).
+        try:
+            while True:
+                select.select([out_fd], [], [])
+                try:
+                    data = os.read(out_fd, 65536)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    break
+                send(b"D", data)
+        except (OSError, ValueError):
+            gone.set()
+        finally:
+            drained.set()
+
+    def write_in(data):
+        """All of data to the session's input, unless the launcher hangs up or the session ends
+        while it isn't reading."""
+        view = memoryview(data)
+        waiter = select.poll()
+        waiter.register(in_fd, select.POLLOUT)
+        waiter.register(conn.fileno(), select.POLLRDHUP | select.POLLHUP | select.POLLERR)
+        while len(view):
+            try:
+                view = view[os.write(in_fd, view):]
+                continue
+            except BlockingIOError:
+                pass
+            except OSError:
+                return True  # nobody reads it anymore: the session's end shows elsewhere
+            for fd, ev in waiter.poll(500):
+                if fd == conn.fileno() and ev:
+                    return False
+            if proc.poll() is not None:
+                return True
+        return True
+
+    os.set_blocking(in_fd, False)
+    threading.Thread(target=pump_out, daemon=True).start()
+    try:
+        poller = select.poll()
+        poller.register(conn.fileno(), select.POLLIN | select.POLLRDHUP | select.POLLHUP | select.POLLERR)
+        buf = bytearray()
+        input_open = True
+        while not gone.is_set():
+            if proc.poll() is not None:
+                # What it wrote last is still on its way; a process it left behind that holds
+                # the terminal open must not keep the launcher waiting.
+                drained.wait(2.0)
+                break
+            if not poller.poll(100):
+                continue
+            try:
+                got = conn.recv(1 << 16, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                continue
+            except OSError:
+                got = b""
+            if not got:
+                gone.set()
+                break
+            buf += got
+            while len(buf) >= 5:
+                size = struct.unpack(">I", buf[1:5])[0]
+                if size > (1 << 20):
+                    raise ValueError("frame too large")
+                if len(buf) < 5 + size:
+                    break
+                kind, data = bytes(buf[:1]), bytes(buf[5:5 + size])
+                del buf[:5 + size]
+                if kind == b"D" and input_open:
+                    if not write_in(data):
+                        gone.set()
+                        break
+                elif kind == b"W" and size == 4 and master is not None:
+                    set_size(master, *struct.unpack(">HH", data))
+                elif kind == b"E" and input_open and master is None:
+                    input_open = False
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+        if gone.is_set():
+            log("session", sid, "peer gone, ending it")
+            end(proc)
+        else:
+            try:
+                send(b"X", struct.pack(">i", proc.returncode))
+            except OSError:
+                pass
+    finally:
+        if proc.poll() is None:
+            end(proc)
+        # The reader may still sit in select on these: let it see them fail, not a reused number.
+        drained.wait(1.0)
+        if master is not None:
+            os.close(master)
+        else:
+            for f in (proc.stdin, proc.stdout):
+                try:
+                    f.close()
+                except OSError:
+                    pass
+    return proc
+
+
 def handle(conn, peer):
     proc = None
     try:
@@ -475,7 +656,7 @@ def handle(conn, peer):
         parts = line.split(b" ") if line else []
         with open(TOKEN_FILE, "rb") as f:
             token = f.read().strip()
-        shape = {b"TESSERA1": 4, b"TESSERAX1": 6, b"TESSERAX2": 6}.get(parts[0] if parts else b"")
+        shape = {b"TESSERA1": 4, b"TESSERA2": 6, b"TESSERAX1": 6, b"TESSERAX2": 6}.get(parts[0] if parts else b"")
         if shape != len(parts) or not token or not hmac.compare_digest(parts[1], token):
             log("refused", peer)
             return
@@ -488,12 +669,16 @@ def handle(conn, peer):
             return
         conn.settimeout(None)
         chunks = [payload[i:i + CHUNK].decode() for i in range(0, len(payload), CHUNK)]
+        argv = ["/bin/sh", ENTER, sid.decode()] + chunks
+        env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+        if parts[0] == b"TESSERA2":
+            if not (parts[4].isdigit() and parts[5].isdigit() and len(parts[4]) <= 4 and len(parts[5]) <= 4):
+                return
+            proc = serve_session(conn, sid.decode(), argv, env, int(parts[4]), int(parts[5]))
+            log("session", sid.decode(), "exit", proc.returncode)
+            return
         fd = conn.fileno()
-        proc = subprocess.Popen(
-            ["/bin/sh", ENTER, sid.decode()] + chunks,
-            stdin=fd, stdout=fd, stderr=fd, start_new_session=True, close_fds=True, cwd="/",
-            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-        )
+        proc = subprocess.Popen(argv, stdin=fd, stdout=fd, stderr=fd, start_new_session=True, close_fds=True, cwd="/", env=env)
         log("session", sid.decode(), "pid", proc.pid, "from", peer)
         # The session holds the socket too, so its end isn't seen by reading: watch for the
         # peer hanging up instead.

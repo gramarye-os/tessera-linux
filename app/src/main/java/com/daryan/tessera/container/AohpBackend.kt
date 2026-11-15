@@ -65,9 +65,11 @@ data class AohpTarget(
  * which gives it a private mount namespace and drops it to this app's uid, as
  * [DroidspacesBackend]'s does.
  *
- * The launch is a local shell that sends one line, "TESSERA1 <token> <session> <settings>", and
- * then relays its terminal to the agent with toybox nc; the agent ends the app when the
- * connection closes. The env can't see this app's folders, so nothing is shared through files.
+ * The launch is a small program of this app's (cpp/relay.c) that sends one line, "TESSERA2
+ * <token> <session> <settings> <rows> <columns>", and then carries its terminal to the one the
+ * agent makes for the app in the env: what is typed, the size whenever it changes, and back the
+ * app's output and exit status. The agent ends the app when the connection closes. The env
+ * can't see this app's folders, so nothing is shared through files.
  *
  * The display comes one of two ways. Where the env can ([AohpTarget.hostX]), the agent starts
  * the session's X server on the env's side ([startXServer]): its socket is a file the app
@@ -93,6 +95,9 @@ class AohpBackend(
 
     companion object {
         const val NAME = "Gramarye"
+
+        /** The relay, among the native libraries: that is where Android unpacks what it lets an app run. */
+        const val RELAY = "libtessera-relay.so"
 
         /** What [GpuDriver]'s environment says about this app's own Mesa bundle, which an env doesn't get. */
         private val BUNDLE_ONLY = setOf("LD_LIBRARY_PATH", "__EGL_VENDOR_LIBRARY_FILENAMES", "LIBGL_DRIVERS_PATH")
@@ -125,9 +130,9 @@ class AohpBackend(
     override fun buildLaunch(app: PermissionManifest, session: Session): LaunchSpec =
         launchSpec(session, settings(app, session))
 
-    /** The first line the agent reads. */
+    /** The first line the agent reads, less the terminal's rows and columns, which the relay adds. */
     internal fun hello(session: Session, settings: String) =
-        "TESSERA1 ${target.token} ${session.id} ${encodeSettings(settings)}"
+        "TESSERA2 ${target.token} ${session.id} ${encodeSettings(settings)}"
 
     /**
      * Has the agent start [session]'s X server on the env's side, for the window tagged [tag] of
@@ -175,21 +180,14 @@ class AohpBackend(
         // source and outgrow what one of those may hold.
         val hello = File(paths.sessionDir(session), "aohp-hello")
         hello.parentFile?.mkdirs()
-        hello.writeText(hello(session, settings) + "\n")
+        hello.writeText(hello(session, settings))
         hello.setReadable(false, false)
         hello.setReadable(true, true)
-        // nc relays this terminal once the line is sent. What feeds it reads the terminal, which
-        // never ends by itself, so it is a background job the shell ends once nc returns (the agent
-        // hung up: the app is gone). Its last command is exec'd so that the job is that reader and
-        // not a shell waiting on it, and its input is handed over explicitly: a shell without job
-        // control gives background jobs none.
-        val line = "h=\"\$1\"; f=\"\$h.in\"; rm -f \"\$f\"; mkfifo -m 600 \"\$f\" || exit 1; " +
-            "exec 3<&0; { cat \"\$h\"; rm -f \"\$h\"; exec cat <&3; } > \"\$f\" & c=\$!; exec 3<&-; " +
-            "/system/bin/toybox nc 127.0.0.1 ${target.port} < \"\$f\"; s=\$?; " +
-            "kill \$c 2>/dev/null; rm -f \"\$f\"; exit \$s"
-        // SESSION_ENV lets the launcher's own end-of-session sweep find these processes too.
+        // The relay (cpp/relay.c) reads that line, adds this terminal's size, and carries the
+        // terminal to the one the agent makes for the app: sizes as they change, the app's exit
+        // status at the end. SESSION_ENV lets the launcher's own end-of-session sweep find it.
         return LaunchSpec(
-            listOf("/system/bin/sh", "-c", line, "tessera-aohp", hello.path),
+            listOf(File(paths.nativeLibDir, RELAY).path, target.port.toString(), hello.path),
             mapOf(SESSION_ENV to session.id), "/",
         )
     }
