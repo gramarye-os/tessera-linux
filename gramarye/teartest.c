@@ -69,6 +69,7 @@ int main(int argc, char **argv) {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad); glEnableVertexAttribArray(0);
     glViewport(0, 0, W, H); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    unsigned long long left = 0; int leftTorn = 0;   /* the torn picture the frame before left in the window, if it did */
     int torn = 0, late = 0, never = 0, shown = 0, oldk[NPAL] = {0}, tornOther = 0;
     double wrongSum = 0, wrongMax = 0, t0 = now(), finSum = 0, finMax = 0, showSum = 0, showMax = 0; int showN = 0;
     for (int fr = 0; fr < frames; fr++) {
@@ -86,10 +87,11 @@ int main(int argc, char **argv) {
             if (!im) { puts("XGetImage failed"); return 1; }
             int rs = shift_of(im->red_mask), gs = shift_of(im->green_mask), bs = shift_of(im->blue_mask);
             long good = 0, total = 0, old[NPAL] = {0}, other = 0, blank = 0; int y0 = -1, y1 = -1, x0 = W, x1 = -1;
+            unsigned long long sum = 14695981039346656037ULL;
             for (int y = 0; y < H; y += 2) for (int x = 0; x < W; x += 2) {
                 unsigned long px = XGetPixel(im, x, y);
                 int r = (px >> rs) & 255, g = (px >> gs) & 255, b = (px >> bs) & 255, hit = -1;
-                total++;
+                total++; sum = (sum ^ (unsigned long long) (r << 16 | g << 8 | b)) * 1099511628211ULL;
                 if (near(r, col[0]) && near(g, col[1]) && near(b, col[2])) { good++; continue; }
                 if (!r && !g && !b) blank++;   /* the window's background, before its first frame */
                 for (int k = 1; k < NPAL; k++) { const unsigned char *o = PAL[(fr + NPAL - k) % NPAL]; if (near(r, o[0]) && near(g, o[1]) && near(b, o[2])) { hit = k; break; } }
@@ -97,11 +99,13 @@ int main(int argc, char **argv) {
                 if (y0 < 0) y0 = y; y1 = y; if (x < x0) x0 = x; if (x > x1) x1 = x;
             }
             XDestroyImage(im);
-            if (good == total) { double dt = (now() - ts) * 1000; showSum += dt; showN++; if (dt > showMax) showMax = dt; if (tries) late++; break; }
+            if (good == total) { double dt = (now() - ts) * 1000; showSum += dt; showN++; if (dt > showMax) showMax = dt; if (tries) late++; leftTorn = 0; break; }
+            /* a torn frame stays in the window until the next one is copied: that is not this frame torn */
+            if (leftTorn && sum == left) { if (tries < 30) { usleep(1000); continue; } never++; break; }
             if (blank == total && tries < 30) { usleep(1000); continue; }
             if (good == 0 && other == 0 && tries < 30) { usleep(1000); continue; }   /* not copied yet: whole window is an older frame */
-            if (good == 0 && other == 0) { never++; break; }
-            torn++;
+            if (good == 0 && other == 0) { never++; leftTorn = 0; break; }
+            torn++; left = sum; leftTorn = 1;
             double wf = 100.0 * (total - good) / total; wrongSum += wf; if (wf > wrongMax) wrongMax = wf;
             int best = 0; for (int k = 1; k < NPAL; k++) if (old[k] > old[best]) best = k;
             if (best && old[best] >= other) oldk[best]++; else tornOther++;
