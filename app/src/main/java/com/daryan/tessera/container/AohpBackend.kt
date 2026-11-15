@@ -6,17 +6,24 @@ package com.daryan.tessera.container
 import android.util.Base64
 import java.io.File
 
-/** Where a gramarye env's Tessera agent listens, and the token it lets a launch in with. */
-data class AohpTarget(val port: Int, val token: String) {
+/**
+ * Where a gramarye env's Tessera agent listens, and the token it lets a launch in with.
+ * [vulkanIcd] is the env's own Turnip driver (the ICD file of a Mesa built for Android's GPU
+ * device), when it has one: hardware graphics there use the env's Mesa, not this app's bundle.
+ */
+data class AohpTarget(val port: Int, val token: String, val vulkanIcd: String? = null) {
     companion object {
         const val DEFAULT_PORT = 7377
 
-        /** From the agent file's one line, "<port> <token>"; null when it isn't that. */
+        /** From the agent file's one line, "<port> <token> [<vulkan icd path>]"; null when it isn't that. */
         fun parse(text: String): AohpTarget? {
             val parts = text.trim().split(Regex("\\s+"))
             val port = parts.getOrNull(0)?.toIntOrNull() ?: return null
             val token = parts.getOrNull(1)?.takeIf { it.isNotEmpty() } ?: return null
-            return if (parts.size == 2 && port in 1..65535) AohpTarget(port, token) else null
+            val icd = parts.getOrNull(2)?.takeIf { it.startsWith("/") }
+            return if (parts.size in 2..3 && port in 1..65535 && (parts.size == 2 || icd != null)) {
+                AohpTarget(port, token, icd)
+            } else null
         }
     }
 }
@@ -45,8 +52,14 @@ class AohpBackend(
 ) : ContainerBackend {
     override val name = NAME
 
+    /** Whether windowed apps can draw with the phone's GPU: the env has a driver and the device is there. */
+    val hasGpu: Boolean get() = target.vulkanIcd != null && File(GpuDriver.KGSL).canRead()
+
     companion object {
         const val NAME = "Gramarye"
+
+        /** What [GpuDriver]'s environment says about this app's own Mesa bundle, which an env doesn't get. */
+        private val BUNDLE_ONLY = setOf("LD_LIBRARY_PATH", "__EGL_VENDOR_LIBRARY_FILENAMES", "LIBGL_DRIVERS_PATH")
 
         /** The file in the app's storage that names the agent: "<port> <token>". */
         const val AGENT_FILE = "aohp/agent"
@@ -98,6 +111,12 @@ class AohpBackend(
     internal fun settings(app: PermissionManifest, session: Session): String {
         val p = app.permissions
         val env = guestEnv(app, session).toMutableMap()
+        // Hardware graphics come from the env's Mesa: keep what selects Zink on Turnip and how
+        // frames are presented, and name the env's driver instead of the bundle's.
+        if (session.gpu && target.vulkanIcd != null) {
+            BUNDLE_ONLY.forEach { env.remove(it) }
+            env["VK_ICD_FILENAMES"] = target.vulkanIcd
+        }
         // The X server takes no client without the session's cookie; the guest gets it as a file
         // the script writes into the app's private /tmp.
         val xauth = if (p.display && session.display != null) XAuth.create(paths, session) else null

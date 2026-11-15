@@ -174,6 +174,8 @@ class SessionManager(
             is ChrootBackend -> GpuDriver.installedAsRoot(context)
             // The container needs the GPU's device node too (hardware or GPU access on).
             is DroidspacesBackend -> backend.hasGpuDevice && GpuDriver.installedAsRoot(context)
+            // The env brings its own driver; the agent file says whether it has one.
+            is AohpBackend -> backend.hasGpu
             else -> false
         }
         val session = Session(
