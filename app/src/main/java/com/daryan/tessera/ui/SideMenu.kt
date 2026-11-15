@@ -127,7 +127,7 @@ fun SideMenu(status: MenuStatus, actions: MenuActions) {
                     SegmentedButton(
                         selected = status.mode == m,
                         onClick = { actions.setMode(m) },
-                        enabled = m == BackendMode.PROOT || status.rootAvailable,
+                        enabled = m == BackendMode.PROOT || m == BackendMode.AOHP || status.rootAvailable,
                         shape = SegmentedButtonDefaults.itemShape(i, BackendMode.entries.size),
                     ) { Text(m.short, maxLines = 1) }
                 }

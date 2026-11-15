@@ -10,6 +10,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import android.os.Build
 import com.daryan.tessera.container.ConfigStore
+import com.daryan.tessera.container.AohpTarget
+import com.daryan.tessera.container.AohpPairing
 import com.daryan.tessera.container.FsGrant
 import com.daryan.tessera.files.FileBrowser
 import com.daryan.tessera.files.FilesEngine
@@ -106,6 +108,28 @@ internal fun sameApp(a: PermissionManifest, b: PermissionManifest): Boolean {
     if (a.id == b.id) return true
     val program = a.exec.firstOrNull()?.substringAfterLast('/') ?: return false
     return program !in WRAPPERS && program == b.exec.firstOrNull()?.substringAfterLast('/')
+}
+
+/** How things stand between this app and a gramarye env's agent. */
+data class GramaryeStatus(
+    /** Whether this app holds a token for an env. */
+    val paired: Boolean,
+    val agent: Agent? = null,
+    val target: AohpTarget? = null,
+) {
+    enum class Agent {
+        ANSWERS,
+        /** Something listens, and doesn't take this app's token (or is an agent too old to say). */
+        REFUSES,
+        /** Nothing listens on the port. */
+        SILENT,
+    }
+}
+
+sealed interface PairingState {
+    data object Idle : PairingState
+    data object Asking : PairingState
+    data class Failed(val why: String) : PairingState
 }
 
 enum class BackendMode(val label: String, val short: String) {
@@ -304,6 +328,58 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _status = MutableStateFlow<HostStatus?>(null)
     val status: StateFlow<HostStatus?> = _status
+
+    /** How things stand with the gramarye env, as last checked; null in the other modes and until then. */
+    private val _gramarye = MutableStateFlow<GramaryeStatus?>(null)
+    val gramarye: StateFlow<GramaryeStatus?> = _gramarye
+
+    /** A pairing code on its way to the env's agent, or what came of the last one. */
+    private val _pairing = MutableStateFlow<PairingState>(PairingState.Idle)
+    val pairing: StateFlow<PairingState> = _pairing
+
+    /** Asks the env's agent for its token with the [typed] code that `tessera-pair` printed there. */
+    fun pairGramarye(typed: String) {
+        if (_pairing.value == PairingState.Asking) return
+        val code = AohpPairing.code(typed)
+        if (code == null) {
+            _pairing.value = PairingState.Failed("A pairing code is six digits.")
+            return
+        }
+        _pairing.value = PairingState.Asking
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AohpPairing.pair(code).also { if (it is AohpPairing.Paired.Done) container.setAohpTarget(it.target) }
+            }
+            _pairing.value = when (result) {
+                is AohpPairing.Paired.Done -> PairingState.Idle
+                is AohpPairing.Paired.Refused -> PairingState.Failed(result.why)
+                is AohpPairing.Paired.NoAnswer -> PairingState.Failed(result.why)
+            }
+            if (result is AohpPairing.Paired.Done) refresh()
+        }
+    }
+
+    /** Forgets the env's token. Sessions that run keep running; nothing new starts until paired again. */
+    fun unpairGramarye() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { container.setAohpTarget(null) }
+            _pairing.value = PairingState.Idle
+            refresh()
+        }
+    }
+
+    /** Asks the env whether this app's token still opens it, and takes up what it can do now. */
+    private fun checkGramarye(): GramaryeStatus {
+        val target = container.aohpTarget() ?: return GramaryeStatus(paired = false)
+        return when (val pinged = AohpPairing.ping(target)) {
+            is AohpPairing.Pinged.Answers -> {
+                if (pinged.target != target) container.setAohpTarget(pinged.target)
+                GramaryeStatus(true, GramaryeStatus.Agent.ANSWERS, pinged.target)
+            }
+            AohpPairing.Pinged.Refused -> GramaryeStatus(true, GramaryeStatus.Agent.REFUSES, target)
+            AohpPairing.Pinged.Silent -> GramaryeStatus(true, GramaryeStatus.Agent.SILENT, target)
+        }
+    }
 
     /** Whether su has worked here before (in chroot mode), so using it again asks nothing. */
     var rootGranted = prefs.getBoolean(KEY_ROOT_GRANTED, false)
@@ -643,6 +719,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+            _gramarye.value = if (_mode.value == BackendMode.AOHP) withContext(Dispatchers.IO) { checkGramarye() } else null
             _status.value = s
             // If Droidspaces is the persisted mode, bring its selected, already-prepared container
             // up automatically. Do this once per selected name per ViewModel lifetime: refresh()
@@ -852,7 +929,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         status == null -> "Checking the system"
         mode == BackendMode.PROOT && !status.prootBinary -> "PRoot isn't bundled in this build yet"
         mode == BackendMode.PROOT && !status.prootRootfs -> "No Linux system installed yet"
-        mode == BackendMode.AOHP && container.aohpTarget() == null -> "No gramarye env is set up for Tessera yet"
+        mode == BackendMode.AOHP && container.aohpTarget() == null -> "Pair Tessera with the gramarye env in Setup"
         mode == BackendMode.CHROOT && status.su == null -> "Root access not found"
         mode == BackendMode.CHROOT && status.chrootRootfs == false -> "No Linux system for chroot mode yet"
         mode == BackendMode.DROIDSPACES && status.su == null -> "Root access not found"

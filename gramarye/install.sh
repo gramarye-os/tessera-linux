@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Installs Tessera's agent in a gramarye (AOHP) env. Run as root inside the env, from a checkout:
 #   sh gramarye/install.sh
-# Prints the line Tessera needs in its files/aohp/agent:
-#   <port> <token> [vk=<vulkan icd>] [gl=<opengl driver>] [x=host]
+# Tessera then asks for a pairing code, under Setup > Gramarye env: run tessera-pair for one.
+# (Tessera keeps "<port> <token> [vk=<vulkan icd>] [gl=<opengl driver>] [x=host]", which
+# pairing gives it, in its files/aohp/agent.)
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 PORT=${TESSERA_PORT:-7377}
@@ -40,4 +41,9 @@ fi
 # The session's X server can run on this env's side when its unit manager is here to start it.
 HOSTX=
 [ -d /etc/aohp/system ] && command -v systemctl >/dev/null 2>&1 && HOSTX=host
-echo "$PORT $(cat /etc/tessera/token)${ICD:+ vk=$ICD}${GL:+ gl=$GL}${HOSTX:+ x=$HOSTX}"
+# What the agent tells a paired launcher this env can do, each time it asks.
+CAPS="${ICD:+vk=$ICD }${GL:+gl=$GL }${HOSTX:+x=$HOSTX}"
+echo "${CAPS% }" > /etc/tessera/caps
+printf '#!/bin/sh\nexec /usr/bin/python3 /opt/tessera/agent.py pair\n' > /usr/local/bin/tessera-pair
+chmod 755 /usr/local/bin/tessera-pair
+echo "Tessera's agent is installed. To pair the Tessera app with this env: tessera-pair"

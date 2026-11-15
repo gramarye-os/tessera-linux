@@ -113,6 +113,8 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
     val install by vm.installState.collectAsStateWithLifecycle()
     val removingLinux by vm.removingLinux.collectAsStateWithLifecycle()
     val containerBusy by vm.containerBusy.collectAsStateWithLifecycle()
+    val gramarye by vm.gramarye.collectAsStateWithLifecycle()
+    val pairing by vm.pairing.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
     // Apps installed from a terminal while the launcher was away show up when it's back.
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { vm.scanSystemApps() }
@@ -596,6 +598,7 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
                         installTools = vm::installContainerTools,
                     ),
                     containerBusy = containerBusy,
+                    gramarye = GramaryeSetup(gramarye, pairing, vm::pairGramarye, vm::unpairGramarye),
                 )
             }
         }

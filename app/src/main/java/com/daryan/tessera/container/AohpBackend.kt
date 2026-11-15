@@ -28,6 +28,16 @@ data class AohpTarget(
     val glDriver: String? = null,
     val hostX: Boolean = false,
 ) {
+    /** What the env can do, as the words [parse] reads after the token. */
+    val caps: String
+        get() = listOfNotNull(vulkanIcd?.let { "vk=$it" }, glDriver?.let { "gl=$it" }, "x=host".takeIf { hostX }).joinToString(" ")
+
+    /** The agent file's line for this, which [parse] reads back. */
+    fun toLine(): String = "$port $token $caps".trimEnd()
+
+    /** This with what the env says it can do now ([caps] as the agent sends it); null when that isn't such words. */
+    fun withCaps(caps: String): AohpTarget? = parse("$port $token $caps")
+
     companion object {
         const val DEFAULT_PORT = 7377
         private val WORD = Regex("[A-Za-z0-9_-]{1,32}")

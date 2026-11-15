@@ -257,6 +257,25 @@ class LauncherContainer(private val app: Application) {
     /** The gramarye env named by [AohpBackend.AGENT_FILE], when there is one. */
     fun aohpTarget(): AohpTarget? =
         runCatching { AohpTarget.parse(java.io.File(app.filesDir, AohpBackend.AGENT_FILE).readText()) }.getOrNull()
+
+    /** Keeps [target] as the env to use, or forgets the env (null). The file holds its token: the app's alone. */
+    fun setAohpTarget(target: AohpTarget?) {
+        val file = java.io.File(app.filesDir, AohpBackend.AGENT_FILE)
+        if (target == null) {
+            file.delete()
+            return
+        }
+        file.parentFile?.mkdirs()
+        val tmp = java.io.File(file.path + ".tmp")
+        tmp.delete()
+        tmp.createNewFile()
+        tmp.setReadable(false, false)
+        tmp.setReadable(true, true)
+        tmp.setWritable(false, false)
+        tmp.setWritable(true, true)
+        tmp.writeText(target.toLine() + "\n")
+        if (!tmp.renameTo(file)) tmp.delete()
+    }
     fun aohp(): AohpBackend? = aohpTarget()?.let { AohpBackend(paths, it) }
 
     companion object {

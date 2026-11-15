@@ -17,6 +17,14 @@ over the loopback interface the env shares with Android. One connection is one s
     TESSERAX2 ...the same...                  and after READY the session's X folder is kept in
                                               step with the launcher's copy of it, see mirror()
 
+and two that are no session:
+
+    TESSERAPING <token>\n                     answered PONG <what this env can do> (- when that
+                                              isn't known): the launcher asking whether its
+                                              token still opens this env
+    TESSERAPAIR <code>\n                      answered OK <port> <token> <what this env can do>,
+                                              or NO <why>: how a launcher gets the token, see pair()
+
 The token is the only thing between any Android app and a root shell in this env: it is compared
 before anything else is read from the line, and the port is bound to 127.0.0.1 only.
 The session runs under enter.sh in its own PID namespace; when the connection closes the agent
@@ -28,6 +36,7 @@ import fcntl
 import hmac
 import os
 import re
+import secrets
 import select
 import shutil
 import signal
@@ -42,6 +51,14 @@ import time
 
 PORT = int(os.environ.get("TESSERA_PORT", "7377"))
 TOKEN_FILE = os.environ.get("TESSERA_TOKEN_FILE", "/etc/tessera/token")
+# What this env can do, as install.sh found: "[vk=<vulkan icd>] [gl=<opengl driver>] [x=host]".
+CAPS_FILE = os.environ.get("TESSERA_CAPS_FILE", "/etc/tessera/caps")
+# An open pairing: "<code> <until, seconds since 1970> <wrong tries>".
+PAIR_FILE = os.environ.get("TESSERA_PAIR_FILE", "/etc/tessera/pair")
+PAIR_SECONDS = 120
+PAIR_TRIES = 5
+CODE = re.compile(rb"^[0-9]{6}$")
+pair_lock = threading.Lock()
 ENTER = os.environ.get("TESSERA_ENTER", "/opt/tessera/enter.sh")
 MAX_LINE = 4 * 1024 * 1024
 CHUNK = 6000  # enter.sh joins its arguments again; one argument may not exceed 128 KiB
@@ -648,6 +665,56 @@ def serve_session(conn, sid, argv, env, rows, cols):
     return proc
 
 
+def caps():
+    """What this env can do, as install.sh wrote it; None when it never did (an agent put here
+    by hand): the launcher then keeps what it knew."""
+    try:
+        with open(CAPS_FILE) as f:
+            return " ".join(f.read().split())
+    except OSError:
+        return None
+
+
+def write_private(path, text):
+    tmp = "%s.%s" % (path, os.urandom(4).hex())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.rename(tmp, path)
+
+
+def open_pairing():
+    """`agent.py pair`, run by root in the env: opens a pairing and prints its code."""
+    code = "%06d" % secrets.randbelow(10 ** 6)
+    write_private(PAIR_FILE, "%s %d 0\n" % (code, time.time() + PAIR_SECONDS))
+    print("Pairing code: %s %s" % (code[:3], code[3:]))
+    print("Enter it in Tessera, under Setup > Gramarye env, within %d minutes." % (PAIR_SECONDS // 60))
+
+
+def pair(code, token):
+    """The answer to a launcher that sent code. The token opens a root shell in this env to
+    whoever holds it, and any app on the phone can reach this port: so it is given once, for a
+    code root asked for in the env a moment ago (open_pairing), which a few wrong guesses close."""
+    with pair_lock:
+        try:
+            with open(PAIR_FILE) as f:
+                want, until, tries = f.read().split()
+            until, tries = int(until), int(tries)
+        except (OSError, ValueError):
+            return b"NO no pairing is open: run tessera-pair in the env first"
+        if time.time() > until:
+            os.unlink(PAIR_FILE)
+            return b"NO that code has run out: run tessera-pair in the env again"
+        if not hmac.compare_digest(code, want.encode()):
+            if tries + 1 >= PAIR_TRIES:
+                os.unlink(PAIR_FILE)
+                return b"NO wrong code, and too many tries: run tessera-pair in the env again"
+            write_private(PAIR_FILE, "%s %d %d\n" % (want, until, tries + 1))
+            return b"NO wrong code"
+        os.unlink(PAIR_FILE)
+        return ("OK %d %s %s" % (PORT, token.decode(), caps() or "")).rstrip().encode()
+
+
 def handle(conn, peer):
     proc = None
     try:
@@ -656,9 +723,18 @@ def handle(conn, peer):
         parts = line.split(b" ") if line else []
         with open(TOKEN_FILE, "rb") as f:
             token = f.read().strip()
-        shape = {b"TESSERA1": 4, b"TESSERA2": 6, b"TESSERAX1": 6, b"TESSERAX2": 6}.get(parts[0] if parts else b"")
+        if len(parts) == 2 and parts[0] == b"TESSERAPAIR" and token:
+            answer = pair(parts[1], token) if CODE.match(parts[1]) else b"NO a pairing code is six digits"
+            log("pairing", "done" if answer.startswith(b"OK") else answer.decode(), "for", peer)
+            conn.sendall(answer + b"\n")
+            return
+        shape = {b"TESSERA1": 4, b"TESSERA2": 6, b"TESSERAX1": 6, b"TESSERAX2": 6, b"TESSERAPING": 2}.get(parts[0] if parts else b"")
         if shape != len(parts) or not token or not hmac.compare_digest(parts[1], token):
             log("refused", peer)
+            return
+        if parts[0] == b"TESSERAPING":
+            known = caps()
+            conn.sendall(("PONG %s" % ("-" if known is None else known)).rstrip().encode() + b"\n")
             return
         if parts[0] in (b"TESSERAX1", b"TESSERAX2"):
             handle_x(conn, peer, parts)
@@ -716,4 +792,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["pair"]:
+        open_pairing()
+    else:
+        main()

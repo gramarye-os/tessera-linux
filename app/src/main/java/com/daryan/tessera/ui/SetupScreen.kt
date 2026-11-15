@@ -60,7 +60,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.daryan.tessera.BackendMode
+import com.daryan.tessera.GramaryeStatus
+import com.daryan.tessera.PairingState
+import com.daryan.tessera.container.AohpPairing
+import com.daryan.tessera.container.AohpTarget
 import com.daryan.tessera.container.Distro
 import com.daryan.tessera.container.HostStatus
 import com.daryan.tessera.container.InstallState
@@ -90,6 +99,8 @@ fun SetupScreen(
     droidspaces: DroidspacesActions? = null,
     /** What the picked Droidspaces container is being made to do ("Starting web"), while it does it. */
     containerBusy: String? = null,
+    /** How things stand with the gramarye env and what Setup can do about it; null where there's no such mode. */
+    gramarye: GramaryeSetup? = null,
 ) {
     LazyColumn(
         contentPadding = PaddingValues(
@@ -108,7 +119,8 @@ fun SetupScreen(
                     SegmentedButton(
                         selected = mode == m,
                         onClick = { onMode(m) },
-                        enabled = m == BackendMode.PROOT || status?.su != null,
+                        // A gramarye env is reached through its agent, not su.
+                        enabled = m == BackendMode.PROOT || m == BackendMode.AOHP || status?.su != null,
                         shape = SegmentedButtonDefaults.itemShape(i, BackendMode.entries.size),
                     ) { Text(m.short, maxLines = 1) }
                 }
@@ -129,7 +141,10 @@ fun SetupScreen(
             return@LazyColumn
         }
 
-        item {
+        // A gramarye env has its own system and needs neither PRoot nor root: only its agent.
+        if (mode == BackendMode.AOHP) {
+            item { GramaryeItem(gramarye, onRefresh) }
+        } else item {
             SetupItem(
                 state = if (status.prootBinary) ItemState.Done else ItemState.Todo,
                 title = "PRoot engine",
@@ -140,7 +155,7 @@ fun SetupScreen(
         if (mode == BackendMode.DROIDSPACES) {
             item { DroidspacesEngineItem(status) }
             item { DroidspacesContainerItem(status, droidspaces, containerBusy) }
-        } else item {
+        } else if (mode != BackendMode.AOHP) item {
             val distro = Distro.DEBIAN
             // Each mode has its own system: in app storage for PRoot, under /data/local for chroot.
             val chroot = mode == BackendMode.CHROOT
@@ -177,7 +192,7 @@ fun SetupScreen(
                 }
             }
         }
-        item {
+        if (mode != BackendMode.AOHP) item {
             SetupItem(
                 state = if (status.su != null) ItemState.Done else ItemState.Warn,
                 title = "Root access (optional)",
@@ -289,6 +304,82 @@ private fun RemoveLinux(removing: Boolean, onRemove: (restoreLimit: Boolean) -> 
         },
         dismissButton = { TextButton(onClick = { asking = false }) { Text("Keep it") } },
     )
+}
+
+/** How things stand with the gramarye env, and what Setup can do about it; the view model's. */
+class GramaryeSetup(
+    val status: GramaryeStatus?,
+    val pairing: PairingState,
+    /** With the code as typed. */
+    val pair: (String) -> Unit,
+    val unpair: () -> Unit,
+)
+
+@Composable
+private fun GramaryeItem(setup: GramaryeSetup?, onRefresh: () -> Unit) {
+    val status = setup?.status
+    val target = status?.target
+    val port = target?.port ?: AohpTarget.DEFAULT_PORT
+    SetupItem(
+        state = when {
+            status?.paired != true -> ItemState.Todo
+            status.agent == GramaryeStatus.Agent.ANSWERS -> ItemState.Done
+            else -> ItemState.Warn
+        },
+        title = "Gramarye env",
+        body = when {
+            status == null -> "Checking the env."
+            !status.paired ->
+                "Tessera starts apps in the env through its agent, which needs to know this app first. " +
+                    "In the env, as root, run tessera-pair and enter the code it prints."
+            status.agent == GramaryeStatus.Agent.ANSWERS -> buildString {
+                append("Paired. The env's agent answers on port $port.")
+                append(if (target?.vulkanIcd != null) " Apps draw with the env's own GPU driver" else " Apps draw without the GPU")
+                append(if (target?.hostX == true) ", on a display the env runs." else ", on a display this app runs.")
+            }
+            status.agent == GramaryeStatus.Agent.REFUSES ->
+                "The env's agent on port $port doesn't accept this app anymore, or is older than this app. " +
+                    "Update it (gramarye/install.sh in the env), or unpair and pair again."
+            else -> "Paired, but nothing answers on port $port. Is the env running?"
+        },
+    ) {
+        if (setup == null || status == null) return@SetupItem
+        if (!status.paired) {
+            var typed by remember { mutableStateOf("") }
+            val asking = setup.pairing == PairingState.Asking
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = { new -> if (new.length <= 8 && new.all { it.isDigit() || it == ' ' || it == '-' }) typed = new },
+                    label = { Text("Pairing code") },
+                    placeholder = { Text("123 456") },
+                    singleLine = true,
+                    enabled = !asking,
+                    isError = setup.pairing is PairingState.Failed,
+                    supportingText = (setup.pairing as? PairingState.Failed)?.let { failed -> { Text(failed.why) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { setup.pair(typed) }),
+                    textStyle = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(onClick = { setup.pair(typed) }, enabled = !asking && AohpPairing.code(typed) != null) {
+                    Text(if (asking) "Pairing" else "Pair")
+                }
+            }
+        } else {
+            // One under the other: side by side they don't fit a phone held upright.
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 8.dp)) {
+                if (status.agent != GramaryeStatus.Agent.ANSWERS) {
+                    FilledTonalButton(onClick = onRefresh) {
+                        Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Check again")
+                    }
+                }
+                ConfirmButton("Unpair", onConfirm = setup.unpair)
+            }
+        }
+    }
 }
 
 /** What Setup can do with Droidspaces containers; the view model's. */
