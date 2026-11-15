@@ -6,6 +6,8 @@
 # Tessera then asks for a pairing code, under Setup > Gramarye env: run tessera-pair for one.
 # (Tessera keeps "<port> <token> [vk=<vulkan icd>] [gl=<opengl driver>] [x=host] [dev=private]", which
 # pairing gives it, in its files/aohp/agent.)
+# A second env on one phone shares its loopback with the first, and needs a port of its own:
+#   TESSERA_PORT=7378 sh gramarye/install.sh
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 PORT=${TESSERA_PORT:-7377}
@@ -19,6 +21,7 @@ fi
 chmod 600 /etc/tessera/token
 if [ -d /etc/aohp/system ]; then
   install -m 644 "$HERE/tessera-agent.service" /etc/aohp/system/tessera-agent.service
+  [ "$PORT" = 7377 ] || sed -i "s/^\[Service\]$/[Service]\nEnvironment=TESSERA_PORT=$PORT/" /etc/aohp/system/tessera-agent.service
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl enable tessera-agent >/dev/null 2>&1 || true
   systemctl restart tessera-agent >/dev/null 2>&1 || systemctl start tessera-agent
@@ -31,7 +34,8 @@ if [ -e /dev/kgsl-3d0 ]; then
     [ -f "$j" ] || continue
     lib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$j" | head -1)
     case "$lib" in /*) ;; *) lib=$(dirname "$j")/$lib ;; esac
-    if [ -f "$lib" ] && grep -q kgsl "$lib" 2>/dev/null; then ICD=$j; break; fi
+    # By the device's path: a Mesa built without it (Fedora's own) still has the word "kgsl" in it.
+    if [ -f "$lib" ] && grep -q /dev/kgsl-3d0 "$lib" 2>/dev/null; then ICD=$j; break; fi
   done
 fi
 # A native OpenGL driver for that device in the same Mesa (faster than OpenGL over Vulkan).
