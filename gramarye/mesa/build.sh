@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds the Mesa a Gramarye env uses on an Adreno phone: freedreno (OpenGL), Turnip (Vulkan) and
-# Zink, all on Android's KGSL GPU device, for Debian trixie arm64. It is the lfdevs
+# Zink, all on Android's KGSL GPU device, for Debian trixie or Fedora 44, arm64. It is the lfdevs
 # mesa-for-android-container tree at the revision of their 20260824 prebuilt tarball (what envs
 # had until now), configured as their CI does but with freedreno-kmds=msm,kgsl, plus the fixes in
 # patches/:
@@ -13,22 +13,31 @@
 #   turnip-kgsl-present-wait: the same for Vulkan and for Zink, which presents through Turnip.
 #     Mesa's X11 code waited for the GPU in mailbox mode only (gramarye/vkteartest.c counts it).
 #
-# Runs on an x86-64 Linux PC, in an arm64 Debian container under qemu-user (needs podman, and
-# qemu-user-static registered with binfmt_misc), so no phone does the compiling. On 32 threads:
-# 6 minutes to configure, 7 to build.
-#   gramarye/mesa/build.sh
-# Result: $MESA_OUT/dist/mesa-kgsl_<version>-g<commit>_debian_trixie_arm64.tar.gz, laid out like
-# the lfdevs tarball. In the env, as root:   tar xzf <it> -C / && ldconfig
-# Env: MESA_SRC and MESA_OUT (default build/gramarye-mesa/src and out), MESA_REV, CCACHE_DIR, JOBS.
+# Runs on an x86-64 Linux PC, in an arm64 container of the env's own distro under qemu-user (needs
+# podman, and qemu-user-static registered with binfmt_misc), so no phone does the compiling. A
+# build only loads in the distro it was made in: it links that distro's LLVM and C++ library.
+# On 32 threads: 6 minutes to configure, 7 to build.
+#   gramarye/mesa/build.sh [debian|fedora]        (default: debian)
+# Result: $MESA_OUT/dist/mesa-kgsl_<version>-g<commit>_<debian_trixie|fedora_44>_arm64.tar.gz, laid
+# out like the lfdevs tarball. In the env, as root:   tar xzf <it> -C / && ldconfig
+# It goes over the distro's own Mesa packages, which must be installed first (they bring what it
+# links to). On Fedora, keep dnf from putting its own Mesa back at the next upgrade:
+#   echo 'excludepkgs=mesa*' >> /etc/dnf/dnf.conf
+# Env: MESA_SRC and MESA_OUT (default build/gramarye-mesa/src and out, out-fedora for Fedora),
+# MESA_REV, CCACHE_DIR, JOBS. One MESA_OUT per distro: it holds the build folder and the cache.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$HERE/../../build/gramarye-mesa
+case "${1:-debian}" in
+  debian) IMAGE=localhost/tessera-mesa-trixie-arm64:1; CONTAINERFILE=Containerfile; DISTRO=debian_trixie; OUT=$WORK/out ;;
+  fedora) IMAGE=localhost/tessera-mesa-fedora44-arm64:1; CONTAINERFILE=Containerfile.fedora; DISTRO=fedora_44; OUT=$WORK/out-fedora ;;
+  *) echo "usage: $0 [debian|fedora]" >&2; exit 2 ;;
+esac
 SRC=${MESA_SRC:-$WORK/src}
-OUT=${MESA_OUT:-$WORK/out}
+OUT=${MESA_OUT:-$OUT}
 REV=${MESA_REV:-98f3d6229d61452cef80f8563af7c56ae599dc14}
 CCACHE_DIR=${CCACHE_DIR:-$OUT/ccache}
-IMAGE=localhost/tessera-mesa-trixie-arm64:1
 mkdir -p "$SRC" "$OUT/build" "$OUT/dist" "$CCACHE_DIR"
 
 # The source at that revision, with our patches as commits on it: Mesa puts its commit in the
@@ -50,8 +59,8 @@ fi
 git log --oneline -3
 
 podman image exists "$IMAGE" ||
-  podman build --platform linux/arm64 -t "$IMAGE" -f "$HERE/Containerfile" "$HERE"
+  podman build --platform linux/arm64 -t "$IMAGE" -f "$HERE/$CONTAINERFILE" "$HERE"
 exec podman run --rm --platform linux/arm64 --security-opt label=disable \
   -v "$SRC":/src -v "$OUT":/out -v "$CCACHE_DIR":/ccache -v "$HERE":/recipe:ro \
-  -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=5G -e JOBS="${JOBS:-}" \
+  -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=5G -e JOBS="${JOBS:-}" -e DISTRO="$DISTRO" \
   "$IMAGE" bash /recipe/in-container.sh

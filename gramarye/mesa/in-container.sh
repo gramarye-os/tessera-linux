@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The part of build.sh that runs inside the arm64 container: configure (once), build, stage, tar.
-# The options are the lfdevs CI's at this revision (.github/workflows/build-check.yml, job
-# debian-trixie), with freedreno-kmds=msm,kgsl in place of kgsl.
+# The options are the lfdevs CI's at this revision (.github/workflows/build-check.yml, jobs
+# debian-trixie and fedora-44, which use the same ones), with freedreno-kmds=msm,kgsl in place of
+# kgsl. Where the libraries go is left to meson, which follows the distro it runs in
+# (usr/lib/aarch64-linux-gnu on Debian, usr/lib64 on Fedora).
 set -euo pipefail
 git config --global --add safe.directory "*"
 cd /src
@@ -38,6 +40,6 @@ DESTDIR=/out/stage meson install -C /out/build --no-rebuild > /out/install.log
 mkdir -p /out/stage/usr/share/tessera
 printf 'build=git-%s\npresent=finished\n' "$(git rev-parse --short=10 HEAD)" > /out/stage/usr/share/tessera/mesa
 ver=$(grep -v "^[[:space:]]*$" VERSION | head -n1)
-name=mesa-kgsl_${ver}-g$(git rev-parse --short=10 HEAD)_debian_trixie_arm64.tar.gz
+name=mesa-kgsl_${ver}-g$(git rev-parse --short=10 HEAD)_${DISTRO:-debian_trixie}_arm64.tar.gz
 tar -czf "/out/dist/$name" -C /out/stage .
 cd /out/dist && sha256sum "$name" | tee "$name.sha256"

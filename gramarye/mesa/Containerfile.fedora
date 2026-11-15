@@ -1,0 +1,12 @@
+# Copyright (C) 2026 Chris Anderson
+# SPDX-License-Identifier: Apache-2.0
+#
+# Fedora 44 arm64 with what Fedora's own Mesa needs to build: the lfdevs CI's recipe
+# (.github/workflows/build-check.yml, job fedora-44). gramarye/mesa/build.sh fedora builds and uses it.
+# libxml2-devel is ours: Debian's build dependencies bring it and Fedora's don't, and without it
+# meson downloads a libxml2 of its own, builds it, and installs it with Mesa.
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf install -y dnf-plugins-core git ccache libarchive-devel libxml2-devel \
+ && dnf config-manager setopt fedora-source.enabled=1 updates-source.enabled=1 \
+ && dnf builddep -y mesa \
+ && dnf clean all
