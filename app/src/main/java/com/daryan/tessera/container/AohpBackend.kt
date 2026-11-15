@@ -133,7 +133,8 @@ class AohpBackend(
      * Has the agent start [session]'s X server on the env's side, for the window tagged [tag] of
      * the app [pkg] (whose APK holds the server), and returns once it accepts clients. The
      * server lives as long as the returned process isn't destroyed: it is the connection to the
-     * agent, which stops the server when that closes.
+     * agent, which stops the server when that closes. The same connection keeps the session's
+     * X11 folder here in step with the server's own, see [SessionMirror].
      */
     fun startXServer(session: Session, tag: String, pkg: String): Process {
         val display = requireNotNull(session.display) { "session has no display" }
@@ -141,14 +142,17 @@ class AohpBackend(
         try {
             socket.connect(InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), target.port), CONNECT_MS)
             socket.getOutputStream().run {
-                write("TESSERAX1 ${target.token} ${session.id} $display $tag $pkg\n".toByteArray(Charsets.US_ASCII))
+                write("TESSERAX2 ${target.token} ${session.id} $display $tag $pkg\n".toByteArray(Charsets.US_ASCII))
                 flush()
             }
             socket.soTimeout = READY_MS
             val reply = readLine(socket.getInputStream())
             socket.soTimeout = 0
-            if (reply != "READY") throw IOException("the env could not start the X server: ${reply ?: "no answer"}")
-            return RemoteXServer(socket)
+            if (reply != "READY") {
+                throw IOException("the env could not start the X server: ${reply ?: "no answer (is its agent older than this app?)"}")
+            }
+            // From here the connection carries the session's folder both ways.
+            return RemoteXServer(socket, SessionMirror(socket, paths.x11SocketDir(session)).apply { start() })
         } catch (e: IOException) {
             runCatching { socket.close() }
             throw e
@@ -241,18 +245,17 @@ class AohpBackend(
  * A session's X server on the env's side, seen from here: the connection to the agent that
  * started it. Closing it is what stops the server.
  */
-private class RemoteXServer(private val socket: Socket) : Process() {
-    override fun getOutputStream(): OutputStream = socket.getOutputStream()
-    override fun getInputStream(): InputStream = socket.getInputStream()
+private class RemoteXServer(private val socket: Socket, private val mirror: SessionMirror) : Process() {
+    // The connection is the mirror's: nothing of the server's own comes through it.
+    override fun getOutputStream(): OutputStream = object : OutputStream() {
+        override fun write(b: Int) = Unit
+    }
+    override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
     override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
 
     /** Until the agent hangs up: the server is gone. */
     override fun waitFor(): Int {
-        runCatching {
-            val input = socket.getInputStream()
-            val buffer = ByteArray(256)
-            while (input.read(buffer) >= 0) Unit
-        }
+        mirror.join()
         return 0
     }
 
@@ -260,6 +263,7 @@ private class RemoteXServer(private val socket: Socket) : Process() {
         if (socket.isClosed) 0 else throw IllegalThreadStateException("the X server is still running")
 
     override fun destroy() {
+        mirror.close()
         runCatching { socket.close() }
     }
 }

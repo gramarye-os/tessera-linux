@@ -10,12 +10,15 @@ over the loopback interface the env shares with Android. One connection is one s
     TESSERAX1 <token> <session id> <display> <window tag> <android package>\n
                                               the session's X server, started on the env's side;
                                               answered READY or FAILED <why>, stopped on hang-up
+    TESSERAX2 ...the same...                  and after READY the session's X folder is kept in
+                                              step with the launcher's copy of it, see mirror()
 
 The token is the only thing between any Android app and a root shell in this env: it is compared
 before anything else is read from the line, and the port is bound to 127.0.0.1 only.
 The session runs under enter.sh in its own PID namespace; when the connection closes the agent
 ends its process group, and the namespace goes with it.
 """
+import ctypes
 import hmac
 import os
 import re
@@ -23,6 +26,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -39,6 +43,15 @@ TAG = re.compile(rb"^[A-Za-z0-9_-]{1,48}$")
 PKG = re.compile(rb"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 UNITS = "/etc/aohp/system"
 XROOT = "/var/lib/tessera/x"  # on the rootfs: the host side sees it under $AOHP_ROOTFS
+# What a session's helpers and the launcher tell each other through the X folder (see mirror()):
+# files a helper replaces whole, files it appends to, the pipes it takes commands from, and the
+# folder the launcher keeps the session's theme in.
+MIRROR_WHOLE = ("launcher-windows", "launcher-desktop-items")
+MIRROR_APPENDED = ("launcher-focus", "launcher-notify", "launcher-desktop-events")
+MIRROR_PIPES = ("launcher-wincmd", "launcher-notifycmd", "launcher-desktop")
+MIRROR_TREE = "tessera-theme"
+MAX_FILE = 8 * 1024 * 1024
+MAX_NAME = 1024
 ABI_DIR = {"aarch64": "arm64", "x86_64": "x86_64", "armv7l": "arm", "armv8l": "arm", "i686": "x86"}
 
 
@@ -153,6 +166,275 @@ def x_start(sid, display, tag, pkg):
     return "no X socket after 10 s"
 
 
+def frames(buf):
+    """Takes the whole frames off the front of buf: [(verb, name, data)]. A frame is the line
+    "<verb> <name length> <data length>", then the name's bytes, then the data's."""
+    out = []
+    while True:
+        nl = buf.find(b"\n")
+        if nl < 0:
+            if len(buf) > 64:
+                raise ValueError("no frame header")
+            return out
+        head = bytes(buf[:nl]).split(b" ")
+        if len(head) != 3 or len(head[0]) != 1 or not head[1].isdigit() or not head[2].isdigit():
+            raise ValueError("bad frame header")
+        n, m = int(head[1]), int(head[2])
+        if n > MAX_NAME or m > MAX_FILE:
+            raise ValueError("frame too large")
+        end_at = nl + 1 + n + m
+        if len(buf) < end_at:
+            return out
+        out.append((head[0], bytes(buf[nl + 1:nl + 1 + n]), bytes(buf[nl + 1 + n:end_at])))
+        del buf[:end_at]
+
+
+def frame(verb, name, data=b""):
+    return b"%s %d %d\n" % (verb, len(name), len(data)) + name + data
+
+
+def tree_parts(name):
+    """The path a launcher names inside the theme folder, as its parts; None when it isn't one."""
+    try:
+        parts = name.decode("utf-8").split("/")
+    except UnicodeDecodeError:
+        return None
+    if not 2 <= len(parts) <= 16 or parts[0] != MIRROR_TREE:
+        return None
+    if any(p in ("", ".", "..") or "\0" in p or len(p.encode()) > 255 for p in parts):
+        return None
+    return parts
+
+
+def tree_dir(base_fd, parts, make):
+    """The folder parts name under the X folder, opened without following a link anywhere: the
+    session's processes can write in that folder, and this runs as root."""
+    fd = os.dup(base_fd)
+    try:
+        for i, p in enumerate(parts):
+            made = False
+            if make:
+                try:
+                    os.mkdir(p, 0o755, dir_fd=fd)
+                    made = True
+                except FileExistsError:
+                    pass
+            nxt = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+            if made and i == 0:
+                # The session's theme helper says it is ready with a file of its own here.
+                os.fchmod(fd, 0o1777)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def tree_put(base_fd, parts, data):
+    fd = tree_dir(base_fd, parts[:-1], True)
+    try:
+        tmp = ".%s.tmp" % os.urandom(8).hex()
+        out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fd)
+        try:
+            with os.fdopen(out, "wb") as f:
+                f.write(data)
+            # Whole files only: the theme helper or GTK may read at any moment.
+            os.rename(tmp, parts[-1], src_dir_fd=fd, dst_dir_fd=fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(fd)
+
+
+def tree_delete(base_fd, parts):
+    try:
+        fd = tree_dir(base_fd, parts[:-1], False)
+    except OSError:
+        return
+    try:
+        try:
+            os.unlink(parts[-1], dir_fd=fd)
+        except IsADirectoryError:
+            shutil.rmtree(parts[-1], ignore_errors=True, dir_fd=fd)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
+
+
+def pipe_write(base_fd, name, data):
+    """Into a helper's command pipe; dropped when no helper reads it, as the launcher's own
+    write would be."""
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=base_fd)
+    except OSError:
+        return
+    try:
+        if stat.S_ISFIFO(os.fstat(fd).st_mode):
+            os.write(fd, data)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def watch_fd(path):
+    """An inotify descriptor that turns readable when something in the folder changes, or None."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if fd < 0:
+            return None
+        # IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE
+        if libc.inotify_add_watch(fd, os.fsencode(path), 0x2 | 0x8 | 0x80 | 0x100) < 0:
+            os.close(fd)
+            return None
+        return fd
+    except Exception:
+        return None
+
+
+class Reports:
+    """What the session's helpers wrote in the X folder since last asked."""
+
+    def __init__(self, base_fd):
+        self.base_fd = base_fd
+        self.seen = {}
+        self.offsets = {}
+
+    def _open(self, name):
+        # The session can put anything under these names: a regular file, not a link, or nothing.
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.base_fd)
+        except OSError:
+            return None, None
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            os.close(fd)
+            return None, None
+        return fd, st
+
+    @staticmethod
+    def _read(fd, offset, size):
+        data = b""
+        while len(data) < size:
+            got = os.pread(fd, size - len(data), offset + len(data))
+            if not got:
+                break
+            data += got
+        return data
+
+    def scan(self, send):
+        for name in MIRROR_WHOLE:
+            fd, st = self._open(name)
+            if fd is None:
+                continue
+            try:
+                key = (st.st_ino, st.st_mtime_ns, st.st_size)
+                if self.seen.get(name) == key or st.st_size > MAX_FILE:
+                    continue
+                data = self._read(fd, 0, st.st_size)
+                self.seen[name] = key
+                send(frame(b"F", name.encode(), data))
+            finally:
+                os.close(fd)
+        for name in MIRROR_APPENDED:
+            fd, st = self._open(name)
+            if fd is None:
+                continue
+            try:
+                offset = self.offsets.get(name, 0)
+                if st.st_size < offset:
+                    offset = 0  # a new helper started the file over
+                if st.st_size > offset:
+                    data = self._read(fd, offset, min(st.st_size - offset, MAX_FILE))
+                    self.offsets[name] = offset + len(data)
+                    if data:
+                        send(frame(b"A", name.encode(), data))
+            finally:
+                os.close(fd)
+
+
+def mirror(conn, sid, base):
+    """Keeps the session's X folder (base) and the launcher's copy of it in step, until the
+    launcher hangs up. The session's helpers and the launcher talk through files in that folder,
+    which the launcher cannot reach here, so both ends carry them over this connection in frames
+    (see frames()):
+
+      to the launcher    F <file>  a file a helper replaced whole (the window list)
+                         A <file>  what a helper appended to a file (focus, notifications)
+                         S <mark>  answers the launcher's S: everything before it is done
+      from the launcher  P <path>  a file of the session's theme, under tessera-theme/
+                         D <path>  one that is gone, or a folder of them
+                         L <pipe>  bytes for a helper's command pipe (window commands)
+                         S <mark>
+    """
+    base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    ifd = watch_fd(base)
+    put = 0
+    try:
+        reports = Reports(base_fd)
+        poller = select.poll()
+        poller.register(conn.fileno(), select.POLLIN | select.POLLRDHUP | select.POLLHUP | select.POLLERR)
+        if ifd is not None:
+            poller.register(ifd, select.POLLIN)
+        buf = bytearray()
+        while True:
+            # Without inotify, look often enough that a window list or a keyboard isn't late.
+            events = dict(poller.poll(2000 if ifd is not None else 100))
+            ev = events.get(conn.fileno(), 0)
+            if ev & select.POLLIN:
+                try:
+                    got = conn.recv(1 << 16, socket.MSG_DONTWAIT)
+                except BlockingIOError:
+                    got = None
+                except OSError:
+                    return
+                if got == b"":
+                    return
+                if got:
+                    buf += got
+                    for verb, name, data in frames(buf):
+                        if verb == b"P" or verb == b"D":
+                            parts = tree_parts(name)
+                            if parts is None:
+                                log("x", sid, "mirror: refused path", repr(name[:80]))
+                            elif verb == b"P":
+                                try:
+                                    tree_put(base_fd, parts, data)
+                                    put += 1
+                                except OSError as e:
+                                    log("x", sid, "mirror: put", "/".join(parts), repr(e))
+                            else:
+                                tree_delete(base_fd, parts)
+                        elif verb == b"L":
+                            if name.decode("ascii", "replace") in MIRROR_PIPES:
+                                pipe_write(base_fd, name.decode("ascii"), data)
+                        elif verb == b"S":
+                            if put:
+                                log("x", sid, "mirror: %d theme files" % put)
+                                put = 0
+                            conn.sendall(frame(b"S", name))
+            elif ev:
+                return
+            if ifd is not None and ifd in events:
+                try:
+                    while os.read(ifd, 65536):
+                        pass
+                except OSError:
+                    pass
+            reports.scan(conn.sendall)
+    finally:
+        os.close(base_fd)
+        if ifd is not None:
+            os.close(ifd)
+
+
 def handle_x(conn, peer, parts):
     sid, display, tag, pkg = parts[2], parts[3], parts[4], parts[5]
     if not (SID.match(sid) and display.isdigit() and 0 < int(display) < 1000 and TAG.match(tag) and PKG.match(pkg)):
@@ -168,6 +450,13 @@ def handle_x(conn, peer, parts):
         log("x", sid, "display", int(display), "ready for", peer)
         conn.sendall(b"READY\n")
         conn.settimeout(None)
+        if parts[0] == b"TESSERAX2":
+            try:
+                mirror(conn, sid, "%s/%s/.X11-unix" % (XROOT, sid))
+            except (OSError, ValueError) as e:
+                log("x", sid, "mirror:", repr(e))
+            log("x", sid, "peer gone, stopping the server")
+            return
         poller = select.poll()
         poller.register(conn.fileno(), select.POLLIN | select.POLLRDHUP | select.POLLHUP | select.POLLERR)
         while True:
@@ -186,11 +475,11 @@ def handle(conn, peer):
         parts = line.split(b" ") if line else []
         with open(TOKEN_FILE, "rb") as f:
             token = f.read().strip()
-        shape = {b"TESSERA1": 4, b"TESSERAX1": 6}.get(parts[0] if parts else b"")
+        shape = {b"TESSERA1": 4, b"TESSERAX1": 6, b"TESSERAX2": 6}.get(parts[0] if parts else b"")
         if shape != len(parts) or not token or not hmac.compare_digest(parts[1], token):
             log("refused", peer)
             return
-        if parts[0] == b"TESSERAX1":
+        if parts[0] in (b"TESSERAX1", b"TESSERAX2"):
             handle_x(conn, peer, parts)
             return
         sid, payload = parts[2], parts[3]

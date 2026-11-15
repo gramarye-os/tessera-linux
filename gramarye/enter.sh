@@ -114,7 +114,9 @@ done
 
 # The X server is reached through DISPLAY: on the env's side through a socket folder (XDIR), or in
 # the launcher over loopback TCP with the session's cookie (XAUTH). The helpers keep their files
-# and pipes in /tmp/.X11-unix; nothing relays those to the launcher yet.
+# and pipes in /tmp/.X11-unix. With XDIR that is the server's folder, which the agent keeps in
+# step with the launcher's copy (agent.py, mirror()): the window list, focus and notifications
+# reach the launcher, its window commands and the session's theme reach here.
 if [ -n "$X11" ]; then
   # The session's X cookie: the server refuses a client without it. In the private /tmp, for
   # the app's user only; GUEST_ENV's XAUTHORITY names it.
