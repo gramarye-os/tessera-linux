@@ -98,4 +98,47 @@ class SuConfigStore(
     }
 }
 
+/**
+ * Gramarye mode: the env's files are reached through its agent ([AohpBackend.run]). Read as the
+ * apps' user, which is enough for what the launcher reads; written as root.
+ */
+class AohpConfigStore(
+    private val backend: AohpBackend,
+    /** The normal user's uid in the env: the app's own. */
+    private val userUid: Int = android.os.Process.myUid(),
+) : ConfigStore {
+    override suspend fun read(path: String): String? = withContext(Dispatchers.IO) {
+        val p = shellQuote(guest(path))
+        val ran = backend.run("if [ -f $p ]; then cat $p; else exit $MISSING; fi")
+            ?: throw IOException("the env's agent didn't answer")
+        when (ran.code) {
+            0 -> ran.text
+            MISSING -> null
+            else -> throw IOException("env: ${ran.text.ifBlank { "couldn't read $path" }.trim().take(200)}")
+        }
+    }
+
+    override suspend fun write(path: String, text: String) = withContext(Dispatchers.IO) {
+        val full = guest(path)
+        val p = shellQuote(full)
+        val dir = shellQuote(full.substringBeforeLast('/'))
+        val script = "if [ -f $p ] && [ ! -f $p$BACKUP ]; then cp -p $p $p$BACKUP; fi; " +
+            "mkdir -p $dir && cat > $p && " +
+            // Files in the normal user's home must stay theirs.
+            "case $p in /home/user/*) chown $userUid:$userUid $p;; esac"
+        val ran = backend.run(script, root = true, input = text.toByteArray())
+            ?: throw IOException("the env's agent didn't answer")
+        if (ran.code != 0) throw IOException("env: ${ran.text.ifBlank { "write failed" }.trim().take(200)}")
+    }
+
+    private fun guest(path: String): String {
+        require(path.startsWith("/") && ".." !in path.split('/')) { "bad path $path" }
+        return path
+    }
+
+    private companion object {
+        const val MISSING = 3
+    }
+}
+
 private const val BACKUP = ".bak-launcher"

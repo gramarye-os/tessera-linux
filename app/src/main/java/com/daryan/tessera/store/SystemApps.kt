@@ -34,8 +34,15 @@ class SystemApps {
      * Like [scan], for the chroot system at [rootfs], which only root can read: [su] prints the
      * desktop files, then the icons they name, which are kept in [iconDir] for the launcher.
      */
-    suspend fun scanAsRoot(su: String, rootfs: String, iconDir: File) = withContext(Dispatchers.IO) {
-        val listing = runSu(su, "cd '$rootfs$APPLICATIONS' 2>/dev/null || exit 0; " +
+    suspend fun scanAsRoot(su: String, rootfs: String, iconDir: File) = scanWith({ runSu(su, it) }, rootfs, iconDir)
+
+    /**
+     * Like [scan], for a system only [run] can read (it runs a shell script there and returns
+     * what the script printed, or null): the one at [rootfs] as root sees it through su, or a
+     * gramarye env's own ("" then: the script runs inside it).
+     */
+    suspend fun scanWith(run: (String) -> String?, rootfs: String, iconDir: File) = withContext(Dispatchers.IO) {
+        val listing = run("cd '$rootfs$APPLICATIONS' 2>/dev/null || exit 0; " +
             "for f in *.desktop; do [ -f \"${'$'}f\" ] && echo \"$MARK${'$'}f\" && cat \"${'$'}f\"; done") ?: return@withContext
         val files = sections(listing).map { (name, lines) -> name to lines.joinToString("\n") }
         // Each icon's candidate paths, tried in order; the first that exists comes back as base64.
@@ -47,7 +54,7 @@ class SystemApps {
             "for c in $tries; do [ -f \"${'$'}c\" ] && echo '$MARK$icon' && base64 \"${'$'}c\" && break; done"
         }
         iconDir.mkdirs()
-        val icons = if (wanted.isEmpty()) emptyMap() else sections(runSu(su, script).orEmpty()).mapNotNull { (icon, lines) ->
+        val icons = if (wanted.isEmpty()) emptyMap() else sections(run(script).orEmpty()).mapNotNull { (icon, lines) ->
             val bytes = runCatching { android.util.Base64.decode(lines.joinToString(""), android.util.Base64.DEFAULT) }.getOrNull()
                 ?: return@mapNotNull null
             val file = File(iconDir, icon.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80) + ".png")
@@ -85,9 +92,13 @@ class SystemApps {
     }
 
     /** Like [packageOf], for the chroot system at [rootfs], through [su]. */
-    suspend fun packageOfAsRoot(app: PermissionManifest, su: String, rootfs: String): String? = withContext(Dispatchers.IO) {
+    suspend fun packageOfAsRoot(app: PermissionManifest, su: String, rootfs: String): String? =
+        packageOfWith(app, { runSu(su, it) }, rootfs)
+
+    /** Like [packageOf], for a system only [run] can read; see [scanWith]. */
+    suspend fun packageOfWith(app: PermissionManifest, run: (String) -> String?, rootfs: String): String? = withContext(Dispatchers.IO) {
         val file = synchronized(sources) { sources[app.id] }?.takeIf { '\'' !in it } ?: return@withContext null
-        runSu(su, "grep -lxF '$APPLICATIONS/$file' '$rootfs'/var/lib/dpkg/info/*.list 2>/dev/null | head -n 1")
+        run("grep -lxF '$APPLICATIONS/$file' '$rootfs'/var/lib/dpkg/info/*.list 2>/dev/null | head -n 1")
             ?.trim()?.takeIf { it.isNotEmpty() }
             ?.substringAfterLast('/')?.removeSuffix(".list")?.substringBefore(':')
     }

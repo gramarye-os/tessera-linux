@@ -129,6 +129,10 @@ class AohpBackend(
 
         private const val CONNECT_MS = 5_000
         private const val READY_MS = 20_000
+
+        /** Numbers [run]'s sessions, over every backend made for the env. */
+        private val RUNS = java.util.concurrent.atomic.AtomicInteger()
+        private const val EXISTS_MARK = "@@tessera-exists@@ "
     }
 
     override fun enforcement(capability: Capability, app: PermissionManifest) = when {
@@ -139,6 +143,62 @@ class AohpBackend(
 
     override fun buildLaunch(app: PermissionManifest, session: Session): LaunchSpec =
         launchSpec(session, settings(app, session))
+
+    /** What a script run in the env ([run]) left: its exit status and what it printed. */
+    class Ran(val code: Int, val bytes: ByteArray) {
+        val text get() = String(bytes)
+    }
+
+    /**
+     * Runs [script] (sh) in the env and waits for it: as the apps' user, or as root, with [input]
+     * on its standard input and no network. How the launcher reads and changes the env's system
+     * (what is installed, its menus, its config files), which it has no other way to reach. A
+     * session like any other, over pipes; what it prints on either stream comes back together.
+     * Null when the env's agent can't be reached or the script outlasts [timeoutSeconds].
+     */
+    fun run(script: String, root: Boolean = false, input: ByteArray? = null, timeoutSeconds: Long = 60): Ran? {
+        val session = Session(id = "env${RUNS.incrementAndGet()}", term = "dumb")
+        val app = PermissionManifest(
+            id = "env-run", name = "env", exec = listOf("/bin/sh", "-c", script),
+            permissions = Permissions(root = root),
+        )
+        return try {
+            val spec = buildLaunch(app, session)
+            val process = ProcessBuilder(spec.argv).directory(File(spec.cwd)).redirectErrorStream(true)
+                .apply { environment().putAll(spec.env) }.start()
+            // Fed from a thread of its own: a script that prints before it has read everything
+            // would otherwise fill its pipe while this end is still writing.
+            val feeder = Thread {
+                runCatching { process.outputStream.use { out -> input?.let(out::write) } }
+            }.apply { isDaemon = true; start() }
+            val out = java.io.ByteArrayOutputStream()
+            val reader = Thread { runCatching { process.inputStream.use { it.copyTo(out) } } }.apply { isDaemon = true; start() }
+            if (!process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                return null
+            }
+            reader.join(5_000)
+            feeder.join(1_000)
+            // The relay's own words when it can't reach the agent are no answer from the env.
+            if (process.exitValue() == 1 && out.size() < 512 && String(out.toByteArray()).startsWith("tessera: ")) null
+            else Ran(process.exitValue(), out.toByteArray())
+        } catch (_: IOException) {
+            null
+        } finally {
+            paths.sessionDir(session).deleteRecursively()
+        }
+    }
+
+    /** Which of [paths] (absolute) exist in the env; null when it couldn't be asked. */
+    fun existing(paths: Collection<String>): Set<String>? {
+        val wanted = paths.filter { p -> p.startsWith("/") && p.none { it == '\n' || it == '\u0000' } }.distinct()
+        if (wanted.isEmpty()) return emptySet()
+        val script = "for p in ${wanted.joinToString(" ") { shellQuote(it) }}; do " +
+            "if [ -e \"\$p\" ] || [ -L \"\$p\" ]; then echo \"$EXISTS_MARK\$p\"; fi; done; exit 0"
+        val ran = run(script, timeoutSeconds = 30)?.takeIf { it.code == 0 } ?: return null
+        return ran.text.lineSequence().filter { it.startsWith(EXISTS_MARK) }
+            .map { it.removePrefix(EXISTS_MARK) }.filterTo(mutableSetOf()) { it in wanted }
+    }
 
     /** The first line the agent reads, less the terminal's rows and columns, which the relay adds. */
     internal fun hello(session: Session, settings: String) =

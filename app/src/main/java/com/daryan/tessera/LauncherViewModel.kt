@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import android.os.Build
+import com.daryan.tessera.container.AohpConfigStore
 import com.daryan.tessera.container.ConfigStore
 import com.daryan.tessera.container.AohpTarget
 import com.daryan.tessera.container.AohpPairing
@@ -179,7 +180,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     /** What the picked Droidspaces container has, for its menu; null in the other modes, which list every entry. */
     private val containerMenu: StateFlow<ContainerMenu?> =
         combine(_mode, _containerPrograms, container.registry.installed, container.registry.flatpaks) { mode, programs, installed, flatpaks ->
-            if (mode == BackendMode.DROIDSPACES) ContainerMenu(programs, installed, flatpaks) else null
+            // A gramarye env too is a system of the user's own: its menu lists what it has.
+            if (mode == BackendMode.DROIDSPACES || mode == BackendMode.AOHP) ContainerMenu(programs, installed, flatpaks) else null
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
@@ -190,7 +192,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         combine(entries, container.systemApps.apps, containerMenu) { all, system, menu ->
             val known = if (menu == null) all else all.filter(menu::has)
             known + newSystemApps(system, known)
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, if (_mode.value == BackendMode.DROIDSPACES) emptyList() else entries.value)
+        }.stateIn(
+            viewModelScope, SharingStarted.Eagerly,
+            if (_mode.value == BackendMode.DROIDSPACES || _mode.value == BackendMode.AOHP) emptyList() else entries.value,
+        )
 
     /**
      * The container's own menu entries, minus what the launcher lists already: same name, or
@@ -229,6 +234,20 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 if (!force && now - chrootScannedAt < 60_000) return
                 chrootScannedAt = now
                 viewModelScope.launch { container.systemApps.scanAsRoot(su, paths.chrootRootfs.path, File(getApplication<Application>().cacheDir, "chroot-icons")) }
+            }
+            // A gramarye env's menus are read through its agent, which is a session each time.
+            _mode.value == BackendMode.AOHP -> {
+                val env = container.aohp()
+                if (env == null) {
+                    container.systemApps.clear()
+                    return
+                }
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!force && now - chrootScannedAt < 60_000) return
+                chrootScannedAt = now
+                viewModelScope.launch {
+                    container.systemApps.scanWith({ env.run(it)?.text }, "", File(getApplication<Application>().cacheDir, "env-icons"))
+                }
             }
             else -> container.systemApps.clear()
         }
@@ -494,15 +513,21 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             combine(_mode, _status.filterNotNull(), entries, container.registry.installed) { mode, s, list, _ ->
                 val su = s.su
                 val root = s.droidspacesSelected?.hostRoot
-                if (mode != BackendMode.DROIDSPACES || su == null || root == null) null
-                else Triple(su, root, ContainerMenu.programsOf(list))
+                when {
+                    // A gramarye env is asked through its agent: no su, and its paths are its own.
+                    mode == BackendMode.AOHP -> Triple(null, ENV_ROOT, ContainerMenu.programsOf(list))
+                    mode != BackendMode.DROIDSPACES || su == null || root == null -> null
+                    else -> Triple(su, root, ContainerMenu.programsOf(list))
+                }
             }.distinctUntilChanged().collectLatest { q ->
                 // Only the programs of this container count; another's would show what isn't here.
                 if (q?.second != lastRoot) _containerPrograms.value = null
                 lastRoot = q?.second
                 if (q == null) return@collectLatest
                 val (su, root, programs) = q
-                withContext(Dispatchers.IO) { DroidspacesHost(su).existing(root, programs) }?.let { _containerPrograms.value = it }
+                withContext(Dispatchers.IO) {
+                    if (su == null) container.aohp()?.existing(programs) else DroidspacesHost(su).existing(root, programs)
+                }?.let { _containerPrograms.value = it }
             }
         }
     }
@@ -775,6 +800,9 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * after Linux is installed, and once for systems installed before them.
      */
     private suspend fun addBaseLibraries() {
+        // A gramarye env is its owner's system, with its own graphics drivers: nothing is
+        // installed there that nobody asked for.
+        if (_mode.value == BackendMode.AOHP) return
         if (checkKey() in container.baseLibrariesChecked) return
         val store = configStore(_status.value, _mode.value) ?: return
         val backend = backend() ?: return
@@ -796,6 +824,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * Theme companions ([THEME_COMPANIONS]) of installed toolkits come along.
      */
     private suspend fun addMissingGuiHelpers() {
+        if (_mode.value == BackendMode.AOHP) return
         if (checkKey() in container.guiHelpersChecked) return
         val store = configStore(_status.value, _mode.value) ?: return
         val backend = backend() ?: return
@@ -836,6 +865,13 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         _mode.value == BackendMode.DROIDSPACES && _status.value?.droidspacesSelected?.release?.takesDebianFallback == true
 
     /** What the first-run checks of libraries and helpers are remembered under: per container in Droidspaces mode. */
+    /**
+     * What comes along with a windowed app's install so that its window, keyboard and sound work.
+     * Not in a gramarye env: what Tessera needs there is its owner's to install, and an app's
+     * install brings the app.
+     */
+    private fun guiHelpers(): List<String> = if (_mode.value == BackendMode.AOHP) emptyList() else GUI_HELPER_PACKAGES
+
     private fun checkKey(): String =
         if (_mode.value == BackendMode.DROIDSPACES) "DROIDSPACES:${_status.value?.droidspacesName}" else _mode.value.name
 
@@ -975,6 +1011,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         // The container's files as root sees them; its normal user is the app's own uid.
         mode == BackendMode.DROIDSPACES && status.su != null ->
             status.droidspacesSelected?.hostRoot?.let { SuConfigStore(status.su, it, android.os.Process.myUid()) }
+        // A gramarye env's files are read and written through its agent.
+        mode == BackendMode.AOHP -> container.aohp()?.let { AohpConfigStore(it) }
         else -> null
     }
 
@@ -1024,6 +1062,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * helpers, in the install queue. Then its catalog loads. False when no container is ready.
      */
     fun setupFlathub(): Boolean {
+        // Flathub apps don't run in a gramarye env yet (its enter.sh says so): don't set up for them.
+        if (_mode.value == BackendMode.AOHP) return false
         val backend = backend() ?: return false
         if (blocker(_status.value, _mode.value) != null) return false
         val store = configStore(_status.value, _mode.value)
@@ -1062,8 +1102,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The helpers are a nicety: one the system lacks mustn't stop the app's own install.
         container.queue.enqueue(
-            app.name, listOf(app.pkg) + GUI_HELPER_PACKAGES, QueueAction.INSTALL,
-            container.catalog.iconFile(app)?.path, backend, optional = GUI_HELPER_PACKAGES.toSet(), fallback = debianFallback(),
+            app.name, listOf(app.pkg) + guiHelpers(), QueueAction.INSTALL,
+            container.catalog.iconFile(app)?.path, backend, optional = guiHelpers().toSet(), fallback = debianFallback(),
         ) { store?.let { container.registry.register(app, it) } }
         return true
     }
@@ -1122,6 +1162,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             when {
                 _mode.value == BackendMode.CHROOT && su != null -> container.systemApps.packageOfAsRoot(app, su, paths.chrootRootfs.path)
                 _mode.value == BackendMode.DROIDSPACES -> if (su != null && dsRoot != null) container.systemApps.packageOfAsRoot(app, su, dsRoot) else null
+                _mode.value == BackendMode.AOHP -> container.aohp()?.let { env -> container.systemApps.packageOfWith(app, { env.run(it)?.text }, "") }
                 else -> container.systemApps.packageOf(app, paths.prootRootfs)
             }
         ) ?: return false
@@ -1146,7 +1187,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             ) { container.registry.reresolveFlatpak(app, store) }
             return true
         }
-        val helpers = if (app.gui) GUI_HELPER_PACKAGES.filterNot { it in app.packages } else emptyList()
+        val helpers = if (app.gui) guiHelpers().filterNot { it in app.packages } else emptyList()
         container.queue.enqueue(app.name, app.packages + helpers, QueueAction.INSTALL, app.iconFile, backend, optional = helpers.toSet(), fallback = debianFallback()) {
             container.registry.refreshInstalled(store)
         }
@@ -1390,6 +1431,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "Launcher"
         const val KEY_MODE = "backend_mode"
+        /** Stands for a gramarye env where a Droidspaces container's root folder is named. */
+        const val ENV_ROOT = "gramarye-env:"
         const val KEY_DS_CONTAINER = "droidspaces_container"
         const val KEY_ROOT_GRANTED = "root_granted"
         const val KEY_STORE_SOURCE = "store_source"
