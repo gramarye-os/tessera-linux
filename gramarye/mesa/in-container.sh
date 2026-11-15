@@ -32,6 +32,11 @@ fi
 ninja -C /out/build -j"${JOBS:-$(nproc)}"
 rm -rf /out/stage
 DESTDIR=/out/stage meson install -C /out/build --no-rebuild > /out/install.log
+# What this build does, said where the session's X server is started from (Tessera's agent reads
+# it): its drivers have the GPU finish a frame before they present it (patches/), so the server
+# need not hold a Present back. The commit is the one Mesa names in its libraries.
+mkdir -p /out/stage/usr/share/tessera
+printf 'build=git-%s\npresent=finished\n' "$(git rev-parse --short=10 HEAD)" > /out/stage/usr/share/tessera/mesa
 ver=$(grep -v "^[[:space:]]*$" VERSION | head -n1)
 name=mesa-kgsl_${ver}-g$(git rev-parse --short=10 HEAD)_debian_trixie_arm64.tar.gz
 tar -czf "/out/dist/$name" -C /out/stage .

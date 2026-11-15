@@ -33,7 +33,9 @@ ends its process group, and the namespace goes with it.
 import ctypes
 import errno
 import fcntl
+import glob
 import hmac
+import mmap
 import os
 import re
 import secrets
@@ -67,6 +69,12 @@ B64 = re.compile(rb"^[A-Za-z0-9+/=]+$")
 TAG = re.compile(rb"^[A-Za-z0-9_-]{1,48}$")
 PKG = re.compile(rb"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 UNITS = "/etc/aohp/system"
+# What the env's Mesa says of itself, in a file its build puts in the env with the drivers
+# (gramarye/mesa): "build=git-<commit>", and "present=finished" when its drivers have the GPU
+# finish a frame before they present it. And where the drivers are. See frames_finished().
+MESA_FILE = os.environ.get("TESSERA_MESA_FILE", "/usr/share/tessera/mesa")
+LIB_DIRS = os.environ.get("TESSERA_LIB_DIRS", "/usr/lib/*-linux-gnu:/usr/lib64:/usr/lib").split(":")
+BUILD = re.compile(rb"^git-[0-9a-f]{7,40}$")
 XROOT = "/var/lib/tessera/x"  # on the rootfs: the host side sees it under $AOHP_ROOTFS
 # What a session's helpers and the launcher tell each other through the X folder (see mirror()):
 # files a helper replaces whole, files it appends to, the pipes it takes commands from, and the
@@ -157,6 +165,46 @@ def x_accepts(path):
         s.close()
 
 
+def holds(path, word):
+    """Whether the file has these bytes in it."""
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return m.find(word) >= 0
+    except (OSError, ValueError):
+        return False
+
+
+def frames_finished():
+    """Whether this env's clients present only frames their GPU has finished: the env's Mesa says
+    so of itself (MESA_FILE), and the drivers installed are that build - a Mesa names its commit
+    in its libraries - not others put over it since (a distro upgrade, another tarball)."""
+    try:
+        with open(MESA_FILE) as f:
+            said = dict(line.strip().split("=", 1) for line in f if "=" in line and not line.startswith("#"))
+    except (OSError, UnicodeDecodeError):
+        return False
+    build = said.get("build", "").encode()
+    if said.get("present") != "finished" or not BUILD.match(build):
+        return False
+    vulkan = [p for d in LIB_DIRS for p in glob.glob(d + "/libvulkan_freedreno.so")]
+    opengl = [p for d in LIB_DIRS for p in glob.glob(d + "/libgallium-*.so")]
+    return bool(vulkan) and all(holds(p, build) for p in vulkan) and any(holds(p, build) for p in opengl)
+
+
+def x_script(xdir, pkg, abi, unit, display, tag):
+    """What the host side runs for a session's X server.
+    An Android GPU driver puts nothing on a buffer for the server to wait on, so the server holds
+    each Present of a client's buffer a few milliseconds, which costs a refresh, unless it is told
+    that its clients' drivers wait for the GPU themselves. A server that doesn't know the setting
+    ignores it."""
+    return (
+        "export TMPDIR=$AOHP_ROOTFS%s; export XKB_CONFIG_ROOT=$AOHP_ROOTFS/usr/share/X11/xkb; %s"
+        "for f in /data/app/*/%s-*/base.apk; do export CLASSPATH=$f; "
+        "export XLORIE_LIBRARY=${f%%/base.apk}/lib/%s/libXlorie.so; break; done; "
+        "exec /system/bin/app_process / --nice-name=%s com.termux.x11.CmdEntryPoint :%d -tag %s"
+    ) % (xdir, "export TERMUX_X11_PRESENT_SETTLE_US=0; " if frames_finished() else "", pkg, abi, unit, display, tag)
+
+
 def x_start(sid, display, tag, pkg):
     """The session's X server as a host-side unit: Tessera's own server, from its APK, with its
     socket folder inside this env so that a client here can pass it buffers. Returns None when it
@@ -171,12 +219,7 @@ def x_start(sid, display, tag, pkg):
     os.makedirs(xdir, mode=0o700)
     os.chmod(XROOT, 0o700)
     unit = x_unit(sid)
-    script = (
-        "export TMPDIR=$AOHP_ROOTFS%s; export XKB_CONFIG_ROOT=$AOHP_ROOTFS/usr/share/X11/xkb; "
-        "for f in /data/app/*/%s-*/base.apk; do export CLASSPATH=$f; "
-        "export XLORIE_LIBRARY=${f%%/base.apk}/lib/%s/libXlorie.so; break; done; "
-        "exec /system/bin/app_process / --nice-name=%s com.termux.x11.CmdEntryPoint :%d -tag %s"
-    ) % (xdir, pkg, abi, unit, display, tag)
+    script = x_script(xdir, pkg, abi, unit, display, tag)
     with open("%s/%s.service" % (UNITS, unit), "w") as f:
         f.write(
             "[Unit]\nDescription=Tessera X server for session %s (HostExec, made by tessera-agent)\n"
