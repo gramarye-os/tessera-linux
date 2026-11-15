@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Chris Anderson
+# SPDX-License-Identifier: Apache-2.0
 [Unit]
 Description=Tessera agent: starts the apps Tessera (the Android launcher) asks for in this env
 

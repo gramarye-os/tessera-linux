@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Chris Anderson
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //
 // The phone's end of a session in a gramarye (AOHP) env: what a session's terminal runs here,
 // in place of the app, which runs in the env on a terminal the env's agent makes for it.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Copyright (C) 2026 Chris Anderson
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 # Installs Tessera's agent in a gramarye (AOHP) env. Run as root inside the env, from a checkout:
 #   sh gramarye/install.sh
 # Tessera then asks for a pairing code, under Setup > Gramarye env: run tessera-pair for one.

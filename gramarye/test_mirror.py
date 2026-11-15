@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Chris Anderson
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 """Checks agent.py's mirror() against a folder of its own, playing the launcher over a socket pair:
    python3 gramarye/test_mirror.py
 Needs nothing of an env or a phone. Exits 0 when every check passes."""

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Chris Anderson
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 """Tessera's agent inside a gramarye (AOHP) env.
 
 Tessera has no root on the phone and the env cannot see Tessera's folders, so launches come in

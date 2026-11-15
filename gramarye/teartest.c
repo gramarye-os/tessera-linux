@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Chris Anderson
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 /* Does a GL client's frame reach the X server's screen whole?
  *
  * Draws each frame in one flat colour through EGL and GLES2, swaps without waiting for vsync (as
@@ -8,9 +8,13 @@
  * copied by the server while the GPU was still drawing it: that is tearing, and here it is counted
  * instead of looked for. The colours are dark greys a few steps apart, so the window doesn't flash.
  *
- * Build and run in the env, in a session with a display (DISPLAY and the app's GL variables set):
- *   gcc -O2 -o teartest teartest.c -lX11 -lEGL -lGLESv2
- *   ./teartest plain|finish [frames=300] [layers=40] [width=480] [height=800] [fps=30]
+ * Build in the env, and run it in a session with a display (DISPLAY and the app's GL variables
+ * set). in_session.py borrows those from an app that is open:
+ *   gcc -O2 -o /var/tmp/teartest teartest.c -lX11 -lEGL -lGLESv2
+ *   python3 /var/tmp/in_session.py <pid of the app> -- /var/tmp/teartest plain|finish \
+ *       [frames=300] [layers=40] [width=480] [height=800] [fps=30]
+ * With the Mesa of gramarye/mesa, FD_KGSL_PRESENT_WAIT=0 (before the --) gives the driver's
+ * behaviour without its wait for the GPU, to compare.
  * "finish" calls glFinish() before each swap and says how long the GPU took: no frame can tear
  * then, which tells a server that reads too soon from one that mixes frames up itself. "layers" is
  * how many times the window is filled per frame, to make the GPU's work longer.

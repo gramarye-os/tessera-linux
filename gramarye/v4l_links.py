@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Chris Anderson
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 """Names for the cameras in a session's /dev, as udev gives them under /dev/v4l.
 
    python3 v4l_links.py video2 video3 ...

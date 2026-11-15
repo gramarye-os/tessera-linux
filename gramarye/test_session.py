@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Chris Anderson
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 """Checks a session's terminal end to end on one machine: the phone's relay (app/src/main/cpp/relay.c,
 built here with cc) against agent.py on a port of its own, with a stand-in for enter.sh.
    python3 gramarye/test_session.py
