@@ -1,4 +1,4 @@
 [submodule "third_party/termux-x11"]
 	path = third_party/termux-x11
-	url = https://github.com/daryan044/termux-x11.git
-	branch = linuxlauncher
+	url = https://github.com/gramarye-os/termux-x11.git
+	branch = gramarye-env
