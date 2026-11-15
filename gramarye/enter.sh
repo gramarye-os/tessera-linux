@@ -86,6 +86,15 @@ if ! grep '^Features' /proc/cpuinfo | grep -qw sve; then
   done
 fi
 
+# Firefox asks libpci which graphics card there is before it tries OpenGL, and libpci ends the
+# process when it can't open the list of cards. In an env the list is there and SELinux refuses
+# the open: the probe died, Firefox knew nothing of the GPU and reported "glxtest failed". An
+# empty list says there are no PCI cards, which is what a phone's GPU looks like anyway.
+if [ -e /proc/bus/pci/devices ] && ! head -c 1 /proc/bus/pci/devices >/dev/null 2>&1; then
+  : > /dev/shm/.pci-devices
+  mount --bind /dev/shm/.pci-devices /proc/bus/pci/devices 2>/dev/null || true
+fi
+
 # Prepare the shared home before grants are mounted beneath it. Otherwise a recursive chown
 # of /home/user crosses into mounted Android storage (e.g. Downloads) and can fail or touch host files.
 U=

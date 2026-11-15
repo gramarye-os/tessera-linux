@@ -247,7 +247,8 @@ for p in "${'$'}HOME"/.mozilla/firefox/*/ "${'$'}HOME"/.mozilla/firefox-esr/*/ "
   [ -f "${'$'}p/prefs.js" ] || continue
   u="${'$'}p/user.js"
   gpu=false
-  [ "${'$'}GALLIUM_DRIVER" = zink ] && gpu=true
+  # Zink from this app's bundle, or the driver an env names for its own Mesa (MESA_LOADER_DRIVER_OVERRIDE).
+  case "${'$'}{GALLIUM_DRIVER:-${'$'}MESA_LOADER_DRIVER_OVERRIDE}" in ""|llvmpipe|softpipe|swrast) ;; *) gpu=true ;; esac
   {
     [ -f "${'$'}u" ] && sed '/^\/\/ tessera-gpu {/,/^\/\/ } tessera-gpu/d' "${'$'}u"
     echo '// tessera-gpu { (written by Tessera at every start)'
