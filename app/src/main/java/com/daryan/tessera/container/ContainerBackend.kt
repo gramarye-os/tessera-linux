@@ -249,11 +249,18 @@ for p in "${'$'}HOME"/.mozilla/firefox/*/ "${'$'}HOME"/.mozilla/firefox-esr/*/ "
   gpu=false
   # Zink from this app's bundle, or the driver an env names for its own Mesa (MESA_LOADER_DRIVER_OVERRIDE).
   case "${'$'}{GALLIUM_DRIVER:-${'$'}MESA_LOADER_DRIVER_OVERRIDE}" in ""|llvmpipe|softpipe|swrast) ;; *) gpu=true ;; esac
+  # With an env's own driver Firefox hands the X server its frames as buffers, and by default
+  # (EGL) as soon as each is drawn, by a timer of its own: a frame that just misses the display's
+  # refresh is held for two and the next is never shown, about one frame in twenty while a page
+  # scrolls. Waiting for the refresh when it presents paces Firefox to the display instead.
+  pace=false
+  [ "${'$'}gpu" = true ] && [ -z "${'$'}GALLIUM_DRIVER" ] && pace=true
   {
     [ -f "${'$'}u" ] && sed '/^\/\/ tessera-gpu {/,/^\/\/ } tessera-gpu/d' "${'$'}u"
     echo '// tessera-gpu { (written by Tessera at every start)'
     echo "user_pref(\"gfx.webrender.all\", ${'$'}gpu);"
     echo "user_pref(\"layers.acceleration.force-enabled\", ${'$'}gpu);"
+    echo "user_pref(\"gfx.swap-interval.egl\", ${'$'}pace);"
     echo "user_pref(\"layout.css.devPixelsPerPx\", \"${'$'}{TESSERA_FIREFOX_SCALE:--1.0}\");"
     echo '// } tessera-gpu'
   } > "${'$'}u.tessera" && mv "${'$'}u.tessera" "${'$'}u"
