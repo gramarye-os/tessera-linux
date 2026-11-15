@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
@@ -34,17 +36,23 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.daryan.tessera.container.AohpBackend
 import com.daryan.tessera.container.Capability
 import com.daryan.tessera.container.ContainerBackend
 import com.daryan.tessera.container.Enforcement
 import com.daryan.tessera.container.FsGrant
+import com.daryan.tessera.container.HostDevice
+import com.daryan.tessera.container.HostDevices
 import com.daryan.tessera.container.PermissionManifest
 import com.daryan.tessera.container.Permissions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Android folders offered for sharing, and where each appears in the container. */
 private val SHARED_FOLDERS = listOf(
@@ -178,6 +186,7 @@ fun PermissionEditor(
     }
     if (addingDevice) {
         DeviceDialog(
+            backend = backend,
             taken = p.devices,
             onDismiss = { addingDevice = false },
             onAdd = { path -> addingDevice = false; change(p.copy(devices = p.devices + path)) },
@@ -303,15 +312,21 @@ private fun FolderDialog(taken: List<String>, onDismiss: () -> Unit, onAdd: (FsG
 
 /** Pick a plugged-in USB device or the GPU, or type a device path. */
 @Composable
-private fun DeviceDialog(taken: List<String>, onDismiss: () -> Unit, onAdd: (String) -> Unit) {
+private fun DeviceDialog(backend: ContainerBackend, taken: List<String>, onDismiss: () -> Unit, onAdd: (String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val devices = remember { com.daryan.tessera.container.HostDevices.list(context).filterNot { it.path in taken } }
+    val usb = remember { HostDevices.list(context) }
+    // Cameras come first and a moment later: an env is asked for them, Android doesn't tell.
+    val cameras by produceState(emptyList<HostDevice>(), backend) {
+        value = withContext(Dispatchers.IO) { (backend as? AohpBackend)?.cameras().orEmpty() }
+    }
+    val devices = (cameras + usb).filterNot { it.path in taken }
     var path by remember { mutableStateOf("/dev/") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add a device") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Scrolls: with a dock's worth of USB devices the path field was below the dialog's end.
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (devices.isEmpty()) {
                     Text("No USB devices plugged in.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

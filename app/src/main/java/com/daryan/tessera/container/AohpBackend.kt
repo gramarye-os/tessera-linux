@@ -197,6 +197,15 @@ class AohpBackend(
         }
     }
 
+    /**
+     * The cameras plugged in, as the env sees them; none when it couldn't be asked or its launch
+     * scripts are older than the listing. Asked as root: the env's own /dev has the cameras, an
+     * app's has only the ones it was given.
+     */
+    fun cameras(): List<HostDevice> =
+        run("python3 /opt/tessera/v4l_links.py --cameras", root = true, timeoutSeconds = 15)
+            ?.takeIf { it.code == 0 }?.let { HostDevices.cameras(it.text) }.orEmpty()
+
     /** Which of [paths] (absolute) exist in the env; null when it couldn't be asked. */
     fun existing(paths: Collection<String>): Set<String>? {
         val wanted = paths.filter { p -> p.startsWith("/") && p.none { it == '\n' || it == '\u0000' } }.distinct()

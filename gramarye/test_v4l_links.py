@@ -43,8 +43,25 @@ v.main(['video2', 'video3', 'video32', 'v4l-subdev0', '../video2', 'video9'], de
 check('only what can be named is printed, one line a link', out.getvalue().splitlines() == [
     'by-path/platform-xhci-hcd.2.auto-usb-0:1.3:1.0-video-index0 video2',
     'by-path/platform-xhci-hcd.2.auto-usb-0:1.3:1.0-video-index1 video3'])
-check('a node that is no camera says nothing of itself', v.querycap('/dev/null') == ('', ''))
-check('a node that is not there says nothing of itself', v.querycap(os.path.join(sysfs, 'none')) == ('', ''))
+check('a node that is no camera says nothing of itself', v.querycap('/dev/null') == ('', '', 0))
+check('a node that is not there says nothing of itself', v.querycap(os.path.join(sysfs, 'none')) == ('', '', 0))
+
+# --cameras: what each node says of itself, as on that phone with the webcam on the dock.
+SAYS = {
+    'video0': ('cam-video', 'platform:cam-req-mgr', 0x04200001),           # the phone's own camera
+    'video2': ('OBSBOT Tiny 2: OBSBOT Tiny 2 St', 'usb-xhci-hcd.2.auto-1.3', 0x04200001),
+    'video3': ('OBSBOT Tiny 2: OBSBOT Tiny 2 St', 'usb-xhci-hcd.2.auto-1.3', 0x04a00000),  # its metadata
+    'video32': ('msm_vidc_decoder', 'platform:msm_vidc_bus', 0x04204000),  # a video codec
+}
+out = io.StringIO()
+v.cameras(dev='/dev', sys_dir=sysfs, out=out, ask=lambda path: SAYS.get(os.path.basename(path), ('', '', 0)))
+check('--cameras lists the picture node of what is on USB, and nothing else', out.getvalue() == 'video2\tOBSBOT Tiny 2\n')
+out = io.StringIO()
+v.cameras(dev='/dev', sys_dir=sysfs, out=out, ask=lambda path: ('\tOdd\nName: x', 'usb-1', 1) if path.endswith('video2') else (': x', 'usb-1', 1) if path.endswith('video3') else ('', '', 0))
+check('a name keeps to one line, and a camera without one is still listed', out.getvalue() == 'video2\tOdd Name\nvideo3\tCamera\n')
+out = io.StringIO()
+v.cameras(dev='/dev', sys_dir=os.path.join(sysfs, 'none'), out=out)
+check('--cameras says nothing where sysfs has no cameras folder', out.getvalue() == '')
 
 for name in os.listdir(sysfs):
     os.unlink(os.path.join(sysfs, name))
