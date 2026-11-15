@@ -9,7 +9,7 @@
 #
 # CHUNK... are the pieces of a Base64-encoded settings payload. Decoded SETTINGS are shell
 # assignments, one per line:
-#   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, XAUTH, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
+#   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, XAUTH, XDIR, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
 # Everything mounted here lives in a mount namespace this script makes for itself and vanishes
 # with it; the env's own mounts are never touched.
 set -e
@@ -103,8 +103,9 @@ printf '%s\n' "$BINDS" | while IFS=: read -r src dst mode; do
   share "$src" "$dst" "$mode" || echo "tessera: couldn't share $src at $dst" >&2
 done
 
-# The X server is the launcher's, reached through DISPLAY (loopback TCP) with the session's cookie. The helpers still keep
-# their files and pipes in /tmp/.X11-unix; nothing relays those to the launcher yet.
+# The X server is reached through DISPLAY: on the env's side through a socket folder (XDIR), or in
+# the launcher over loopback TCP with the session's cookie (XAUTH). The helpers keep their files
+# and pipes in /tmp/.X11-unix; nothing relays those to the launcher yet.
 if [ -n "$X11" ]; then
   # The session's X cookie: the server refuses a client without it. In the private /tmp, for
   # the app's user only; GUEST_ENV's XAUTHORITY names it.
@@ -113,6 +114,13 @@ if [ -n "$X11" ]; then
     [ "$RUN_AS_ROOT" = 1 ] || chown "$APP_UID:$APP_UID" /tmp/.tessera-xauth
   fi
   mkdir -p /tmp/.X11-unix
+  if [ -n "${XDIR:-}" ]; then
+    # An X server on the env's side (the agent started it): its socket folder, which nothing else
+    # in the env is given, becomes this session's /tmp/.X11-unix. A socket file is what lets a
+    # client hand the server the buffers it drew.
+    [ -d "$XDIR/.X11-unix" ] || { echo "the session's X server has no socket folder ($XDIR)" >&2; exit 1; }
+    mount --bind "$XDIR/.X11-unix" /tmp/.X11-unix
+  fi
   chmod 1777 /tmp/.X11-unix
   for p in launcher-wincmd launcher-notifycmd; do [ -p "/tmp/.X11-unix/$p" ] || mkfifo -m 666 "/tmp/.X11-unix/$p" 2>/dev/null || true; done
 fi

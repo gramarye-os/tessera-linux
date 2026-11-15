@@ -247,7 +247,7 @@ class SessionManager(
         val audio = if (app.permissions.audio) AudioPipe(File(paths.x11SocketDir(session), AUDIO_FIFO_NAME)) else null
         scope.launch(Dispatchers.IO) {
             try {
-                servers[session.id] = x11.start(session, tcp = backend is AohpBackend)
+                servers[session.id] = x11.start(session, backend as? AohpBackend)
                 followWindows(session, ownTasks = !app.desktop)
                 audio?.let { launch { it.run() } }
                 withContext(Dispatchers.Main) { x11.showWindow(session) }

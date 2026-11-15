@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Installs Tessera's agent in a gramarye (AOHP) env. Run as root inside the env, from a checkout:
 #   sh gramarye/install.sh
-# Prints the line Tessera needs in its files/aohp/agent ("<port> <token> [<vulkan icd>]").
+# Prints the line Tessera needs in its files/aohp/agent:
+#   <port> <token> [vk=<vulkan icd>] [gl=<opengl driver>] [x=host]
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 PORT=${TESSERA_PORT:-7377}
@@ -31,4 +32,12 @@ if [ -e /dev/kgsl-3d0 ]; then
     if [ -f "$lib" ] && grep -q kgsl "$lib" 2>/dev/null; then ICD=$j; break; fi
   done
 fi
-echo "$PORT $(cat /etc/tessera/token)${ICD:+ $ICD}"
+# A native OpenGL driver for that device in the same Mesa (faster than OpenGL over Vulkan).
+GL=
+if [ -n "$ICD" ]; then
+  for d in /usr/lib/*/dri/kgsl_dri.so /usr/lib/dri/kgsl_dri.so /usr/lib64/dri/kgsl_dri.so; do [ -e "$d" ] && { GL=kgsl; break; }; done
+fi
+# The session's X server can run on this env's side when its unit manager is here to start it.
+HOSTX=
+[ -d /etc/aohp/system ] && command -v systemctl >/dev/null 2>&1 && HOSTX=host
+echo "$PORT $(cat /etc/tessera/token)${ICD:+ vk=$ICD}${GL:+ gl=$GL}${HOSTX:+ x=$HOSTX}"

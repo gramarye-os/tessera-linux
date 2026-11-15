@@ -20,12 +20,16 @@ class X11Server(private val context: Context, private val paths: ContainerPaths)
 
     /** Starts the server for [session]. Returns once its socket accepts connections. */
     /**
-     * [tcp]: also listen on TCP (port 6000 + display), for a guest that shares this phone's
-     * network but can't see the session's folder ([AohpBackend]). The listener is on every
-     * interface, so these sessions require the session's cookie ([XAuth]) from every client.
+     * [aohp]: the session runs in a gramarye env. Where that env can, its agent starts the server
+     * on the env's side and this only waits for it ([AohpBackend.startXServer]). Otherwise the
+     * server is started here as for any engine, but also listening on TCP (port 6000 + display),
+     * since the env shares this phone's network and not the session's folder; that listener is
+     * on every interface, so those sessions require the session's cookie ([XAuth]).
      */
-    suspend fun start(session: Session, tcp: Boolean = false): Process {
+    suspend fun start(session: Session, aohp: AohpBackend? = null): Process {
         val display = session.display ?: throw IllegalArgumentException("session has no display")
+        if (aohp != null && aohp.hostX) return aohp.startXServer(session, windowTag(session), context.packageName)
+        val tcp = aohp != null
         val xkb = installXkb()
         // In chroot mode clients run as uid 1000, not as the app; let them reach the socket.
         paths.x11SocketDir(session).apply {

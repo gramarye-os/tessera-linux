@@ -4,26 +4,55 @@
 package com.daryan.tessera.container
 
 import android.util.Base64
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
- * Where a gramarye env's Tessera agent listens, and the token it lets a launch in with.
+ * Where a gramarye env's Tessera agent listens, the token it lets a launch in with, and what the
+ * env can do, as its installer found:
  * [vulkanIcd] is the env's own Turnip driver (the ICD file of a Mesa built for Android's GPU
- * device), when it has one: hardware graphics there use the env's Mesa, not this app's bundle.
+ * device): hardware graphics there use the env's Mesa, not this app's bundle. [glDriver] is a
+ * native OpenGL driver for that device in the same Mesa. [hostX] says the env can start the
+ * session's X server on its own side, which is what lets a client hand it buffers.
  */
-data class AohpTarget(val port: Int, val token: String, val vulkanIcd: String? = null) {
+data class AohpTarget(
+    val port: Int,
+    val token: String,
+    val vulkanIcd: String? = null,
+    val glDriver: String? = null,
+    val hostX: Boolean = false,
+) {
     companion object {
         const val DEFAULT_PORT = 7377
+        private val WORD = Regex("[A-Za-z0-9_-]{1,32}")
 
-        /** From the agent file's one line, "<port> <token> [<vulkan icd path>]"; null when it isn't that. */
+        /**
+         * From the agent file's one line, "<port> <token> [vk=<icd file>] [gl=<driver>] [x=host]";
+         * null when it isn't that. A bare path in third place is the ICD file, as older installers
+         * wrote it.
+         */
         fun parse(text: String): AohpTarget? {
             val parts = text.trim().split(Regex("\\s+"))
-            val port = parts.getOrNull(0)?.toIntOrNull() ?: return null
+            val port = parts.getOrNull(0)?.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
             val token = parts.getOrNull(1)?.takeIf { it.isNotEmpty() } ?: return null
-            val icd = parts.getOrNull(2)?.takeIf { it.startsWith("/") }
-            return if (parts.size in 2..3 && port in 1..65535 && (parts.size == 2 || icd != null)) {
-                AohpTarget(port, token, icd)
-            } else null
+            var target = AohpTarget(port, token)
+            for (word in parts.drop(2)) {
+                val value = word.substringAfter('=', "")
+                target = when {
+                    word.startsWith("/") -> target.copy(vulkanIcd = word)
+                    word.startsWith("vk=/") -> target.copy(vulkanIcd = value)
+                    word.startsWith("gl=") && WORD.matches(value) -> target.copy(glDriver = value)
+                    word == "x=host" -> target.copy(hostX = true)
+                    else -> return null
+                }
+            }
+            return target
         }
     }
 }
@@ -38,9 +67,13 @@ data class AohpTarget(val port: Int, val token: String, val vulkanIcd: String? =
  *
  * The launch is a local shell that sends one line, "TESSERA1 <token> <session> <settings>", and
  * then relays its terminal to the agent with toybox nc; the agent ends the app when the
- * connection closes. The env can't see this app's folders, so nothing is shared through files:
- * the X server listens on TCP for these sessions, the guest's DISPLAY names it over loopback,
- * and a per-session cookie ([XAuth]) is what lets a client in.
+ * connection closes. The env can't see this app's folders, so nothing is shared through files.
+ *
+ * The display comes one of two ways. Where the env can ([AohpTarget.hostX]), the agent starts
+ * the session's X server on the env's side ([startXServer]): its socket is a file the app
+ * reaches directly, so a client can pass it the buffers it drew instead of copying each frame.
+ * Otherwise the X server stays in this app, listens on TCP, and a per-session cookie ([XAuth])
+ * is what lets a client in.
  */
 class AohpBackend(
     private val paths: ContainerPaths,
@@ -55,20 +88,32 @@ class AohpBackend(
     /** Whether windowed apps can draw with the phone's GPU: the env has a driver and the device is there. */
     val hasGpu: Boolean get() = target.vulkanIcd != null && File(GpuDriver.KGSL).canRead()
 
+    /** Whether the session's X server runs on the env's side. */
+    val hostX: Boolean get() = target.hostX
+
     companion object {
         const val NAME = "Gramarye"
 
         /** What [GpuDriver]'s environment says about this app's own Mesa bundle, which an env doesn't get. */
         private val BUNDLE_ONLY = setOf("LD_LIBRARY_PATH", "__EGL_VENDOR_LIBRARY_FILENAMES", "LIBGL_DRIVERS_PATH")
 
-        /** The file in the app's storage that names the agent: "<port> <token>". */
+        /** What makes Mesa copy each frame to the X server as an image: not wanted when buffers can be passed. */
+        private val IMAGE_PATH_ONLY = setOf("MESA_VK_WSI_DEBUG", "LIBGL_KOPPER_DRI2", "LIBGL_DRI3_DISABLE")
+
+        /** The file in the app's storage that names the agent: "<port> <token> ...". */
         const val AGENT_FILE = "aohp/agent"
 
-        /** What a guest's DISPLAY is for the session's X server: loopback TCP, not a socket file. */
+        /** A guest's DISPLAY for an X server in this app: loopback TCP, not a socket file. */
         fun guestDisplay(display: Int) = "127.0.0.1:$display"
 
         /** Where the script puts the session's X cookie for the app. */
         const val GUEST_XAUTHORITY = "/tmp/.tessera-xauth"
+
+        /** Where the agent keeps an env-side X server's socket folder, as the env sees it. */
+        fun guestXDir(session: Session) = "/var/lib/tessera/x/${session.id}"
+
+        private const val CONNECT_MS = 5_000
+        private const val READY_MS = 20_000
     }
 
     override fun enforcement(capability: Capability, app: PermissionManifest) = when {
@@ -83,6 +128,43 @@ class AohpBackend(
     /** The first line the agent reads. */
     internal fun hello(session: Session, settings: String) =
         "TESSERA1 ${target.token} ${session.id} ${encodeSettings(settings)}"
+
+    /**
+     * Has the agent start [session]'s X server on the env's side, for the window tagged [tag] of
+     * the app [pkg] (whose APK holds the server), and returns once it accepts clients. The
+     * server lives as long as the returned process isn't destroyed: it is the connection to the
+     * agent, which stops the server when that closes.
+     */
+    fun startXServer(session: Session, tag: String, pkg: String): Process {
+        val display = requireNotNull(session.display) { "session has no display" }
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), target.port), CONNECT_MS)
+            socket.getOutputStream().run {
+                write("TESSERAX1 ${target.token} ${session.id} $display $tag $pkg\n".toByteArray(Charsets.US_ASCII))
+                flush()
+            }
+            socket.soTimeout = READY_MS
+            val reply = readLine(socket.getInputStream())
+            socket.soTimeout = 0
+            if (reply != "READY") throw IOException("the env could not start the X server: ${reply ?: "no answer"}")
+            return RemoteXServer(socket)
+        } catch (e: IOException) {
+            runCatching { socket.close() }
+            throw e
+        }
+    }
+
+    private fun readLine(input: InputStream): String? {
+        val line = StringBuilder()
+        while (line.length < 512) {
+            val b = input.read()
+            if (b < 0) return line.toString().takeIf { it.isNotEmpty() }
+            if (b == '\n'.code) return line.toString()
+            line.append(b.toChar())
+        }
+        return line.toString()
+    }
 
     private fun launchSpec(session: Session, settings: String): LaunchSpec {
         // In a file, not an argument or the environment: the settings carry the GUI helpers'
@@ -111,15 +193,26 @@ class AohpBackend(
     internal fun settings(app: PermissionManifest, session: Session): String {
         val p = app.permissions
         val env = guestEnv(app, session).toMutableMap()
-        // Hardware graphics come from the env's Mesa: keep what selects Zink on Turnip and how
-        // frames are presented, and name the env's driver instead of the bundle's.
+        val windowed = p.display && session.display != null
+        val envSideX = windowed && target.hostX
+        // Hardware graphics come from the env's Mesa: name its driver instead of the bundle's.
         if (session.gpu && target.vulkanIcd != null) {
             BUNDLE_ONLY.forEach { env.remove(it) }
             env["VK_ICD_FILENAMES"] = target.vulkanIcd
+            if (envSideX) {
+                // The server takes the client's buffers: no frame copies, and OpenGL can use the
+                // env's native driver where it has one instead of going through Vulkan.
+                IMAGE_PATH_ONLY.forEach { env.remove(it) }
+                target.glDriver?.let {
+                    env["MESA_LOADER_DRIVER_OVERRIDE"] = it
+                    env.remove("GALLIUM_DRIVER")
+                }
+            }
         }
-        // The X server takes no client without the session's cookie; the guest gets it as a file
-        // the script writes into the app's private /tmp.
-        val xauth = if (p.display && session.display != null) XAuth.create(paths, session) else null
+        // An X server in this app takes no client without the session's cookie; the guest gets it
+        // as a file the script writes into the app's private /tmp. One on the env's side is
+        // reached through a socket folder only this session is given.
+        val xauth = if (windowed && !envSideX) XAuth.create(paths, session) else null
         if (xauth != null) {
             env["DISPLAY"] = guestDisplay(session.display!!)
             env["XAUTHORITY"] = GUEST_XAUTHORITY
@@ -132,6 +225,7 @@ class AohpBackend(
             "GPU_DEVICE" to if (session.gpu) GpuDriver.KGSL else "",
             "X11" to if (p.display) "1" else "",
             "XAUTH" to (xauth?.let { Base64.encodeToString(it, Base64.NO_WRAP) } ?: ""),
+            "XDIR" to if (envSideX) guestXDir(session) else "",
             "RUN_AS_ROOT" to if (p.root) "1" else "0",
             "APP_UID" to appUid.toString(),
             "NO_NET" to if (p.network) "" else "1",
@@ -140,5 +234,32 @@ class AohpBackend(
             "CMD" to guestCommand(app).joinToString(" ") { shellQuote(it) },
         )
         return vars.entries.joinToString("\n", postfix = "\n") { (k, v) -> "$k=${shellQuote(v)}" }
+    }
+}
+
+/**
+ * A session's X server on the env's side, seen from here: the connection to the agent that
+ * started it. Closing it is what stops the server.
+ */
+private class RemoteXServer(private val socket: Socket) : Process() {
+    override fun getOutputStream(): OutputStream = socket.getOutputStream()
+    override fun getInputStream(): InputStream = socket.getInputStream()
+    override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+
+    /** Until the agent hangs up: the server is gone. */
+    override fun waitFor(): Int {
+        runCatching {
+            val input = socket.getInputStream()
+            val buffer = ByteArray(256)
+            while (input.read(buffer) >= 0) Unit
+        }
+        return 0
+    }
+
+    override fun exitValue(): Int =
+        if (socket.isClosed) 0 else throw IllegalThreadStateException("the X server is still running")
+
+    override fun destroy() {
+        runCatching { socket.close() }
     }
 }
