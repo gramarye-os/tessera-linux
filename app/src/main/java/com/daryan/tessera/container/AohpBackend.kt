@@ -32,7 +32,8 @@ data class AohpTarget(val port: Int, val token: String) {
  * The launch is a local shell that sends one line, "TESSERA1 <token> <session> <settings>", and
  * then relays its terminal to the agent with toybox nc; the agent ends the app when the
  * connection closes. The env can't see this app's folders, so nothing is shared through files:
- * the X server listens on loopback TCP for these sessions and the guest's DISPLAY names it.
+ * the X server listens on TCP for these sessions, the guest's DISPLAY names it over loopback,
+ * and a per-session cookie ([XAuth]) is what lets a client in.
  */
 class AohpBackend(
     private val paths: ContainerPaths,
@@ -52,6 +53,9 @@ class AohpBackend(
 
         /** What a guest's DISPLAY is for the session's X server: loopback TCP, not a socket file. */
         fun guestDisplay(display: Int) = "127.0.0.1:$display"
+
+        /** Where the script puts the session's X cookie for the app. */
+        const val GUEST_XAUTHORITY = "/tmp/.tessera-xauth"
     }
 
     override fun enforcement(capability: Capability, app: PermissionManifest) = when {
@@ -94,7 +98,13 @@ class AohpBackend(
     internal fun settings(app: PermissionManifest, session: Session): String {
         val p = app.permissions
         val env = guestEnv(app, session).toMutableMap()
-        if (p.display) session.display?.let { env["DISPLAY"] = guestDisplay(it) }
+        // The X server takes no client without the session's cookie; the guest gets it as a file
+        // the script writes into the app's private /tmp.
+        val xauth = if (p.display && session.display != null) XAuth.create(paths, session) else null
+        if (xauth != null) {
+            env["DISPLAY"] = guestDisplay(session.display!!)
+            env["XAUTHORITY"] = GUEST_XAUTHORITY
+        }
         val vars = linkedMapOf(
             // As the env sees them; one that isn't there is skipped by the script.
             "BINDS" to p.filesystem.joinToString("\n") { g -> "${g.path}:${g.mountAt}:${if (g.readOnly) "ro" else "rw"}" },
@@ -102,6 +112,7 @@ class AohpBackend(
             "USB_ALL" to if (p.usb) "1" else "",
             "GPU_DEVICE" to if (session.gpu) GpuDriver.KGSL else "",
             "X11" to if (p.display) "1" else "",
+            "XAUTH" to (xauth?.let { Base64.encodeToString(it, Base64.NO_WRAP) } ?: ""),
             "RUN_AS_ROOT" to if (p.root) "1" else "0",
             "APP_UID" to appUid.toString(),
             "NO_NET" to if (p.network) "" else "1",

@@ -9,7 +9,7 @@
 #
 # CHUNK... are the pieces of a Base64-encoded settings payload. Decoded SETTINGS are shell
 # assignments, one per line:
-#   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
+#   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, XAUTH, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
 # Everything mounted here lives in a mount namespace this script makes for itself and vanishes
 # with it; the env's own mounts are never touched.
 set -e
@@ -103,9 +103,15 @@ printf '%s\n' "$BINDS" | while IFS=: read -r src dst mode; do
   share "$src" "$dst" "$mode" || echo "tessera: couldn't share $src at $dst" >&2
 done
 
-# The X server is the launcher's, reached through DISPLAY (loopback TCP). The helpers still keep
+# The X server is the launcher's, reached through DISPLAY (loopback TCP) with the session's cookie. The helpers still keep
 # their files and pipes in /tmp/.X11-unix; nothing relays those to the launcher yet.
 if [ -n "$X11" ]; then
+  # The session's X cookie: the server refuses a client without it. In the private /tmp, for
+  # the app's user only; GUEST_ENV's XAUTHORITY names it.
+  if [ -n "${XAUTH:-}" ]; then
+    (umask 077; printf %s "$XAUTH" | base64 -d > /tmp/.tessera-xauth)
+    [ "$RUN_AS_ROOT" = 1 ] || chown "$APP_UID:$APP_UID" /tmp/.tessera-xauth
+  fi
   mkdir -p /tmp/.X11-unix
   chmod 1777 /tmp/.X11-unix
   for p in launcher-wincmd launcher-notifycmd; do [ -p "/tmp/.X11-unix/$p" ] || mkfifo -m 666 "/tmp/.X11-unix/$p" 2>/dev/null || true; done

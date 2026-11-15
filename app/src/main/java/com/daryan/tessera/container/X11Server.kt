@@ -20,9 +20,9 @@ class X11Server(private val context: Context, private val paths: ContainerPaths)
 
     /** Starts the server for [session]. Returns once its socket accepts connections. */
     /**
-     * [tcp]: also listen on loopback TCP (port 6000 + display), for a guest that shares this
-     * phone's network but can't see the session's folder ([AohpBackend]). Access control is off
-     * for those sessions until they carry a cookie: anything on the phone can reach that port.
+     * [tcp]: also listen on TCP (port 6000 + display), for a guest that shares this phone's
+     * network but can't see the session's folder ([AohpBackend]). The listener is on every
+     * interface, so these sessions require the session's cookie ([XAuth]) from every client.
      */
     suspend fun start(session: Session, tcp: Boolean = false): Process {
         val display = session.display ?: throw IllegalArgumentException("session has no display")
@@ -44,7 +44,10 @@ class X11Server(private val context: Context, private val paths: ContainerPaths)
             listOf(
                 "/system/bin/app_process", "/", CmdEntryPoint::class.java.name,
                 ":$display", "-tag", windowTag(session),
-            ) + if (tcp) listOf("-listen", "tcp", "-ac") else emptyList(),
+            ) + if (tcp) {
+                XAuth.ensure(paths, session)
+                listOf("-listen", "tcp", "-auth", XAuth.file(paths, session).path)
+            } else emptyList(),
         ).redirectErrorStream(true).apply {
             environment()["CLASSPATH"] = context.applicationInfo.sourceDir
             // We extract native libs (PRoot needs that), so lorie can't dlopen from the APK.
