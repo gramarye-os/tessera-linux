@@ -15,7 +15,10 @@ if [ ! -f /out/build/build.ninja ]; then
     --prefix=/usr \
     -Dplatforms=x11,wayland \
     -Dgallium-drivers=freedreno,zink,virgl,llvmpipe \
-    -Dgallium-va=disabled \
+    -Dgallium-va=enabled \
+    -Dtermux-va-bridge=enabled \
+    -Dtermux-va-wayland-shim=enabled \
+    -Dvideo-codecs=all \
     -Dgallium-mediafoundation=disabled \
     -Dvulkan-drivers=freedreno \
     -Dvulkan-layers= \

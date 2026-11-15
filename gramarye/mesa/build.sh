@@ -4,14 +4,14 @@
 #
 # Builds the Mesa a Gramarye env uses on an Adreno phone: freedreno (OpenGL), Turnip (Vulkan) and
 # Zink, all on Android's KGSL GPU device, for Debian trixie or Fedora 44, arm64. It is the lfdevs
-# mesa-for-android-container tree at the revision of their 20260824 prebuilt tarball (what envs
-# had until now), configured as their CI does but with freedreno-kmds=msm,kgsl, plus the fixes in
-# patches/:
-#   freedreno-kgsl-present-wait: freedreno finishes a frame before handing it to the X server.
-#     KGSL puts no fence on the buffer, so a server has nothing to wait on and copied frames the
-#     GPU was still drawing (tearing; gramarye/teartest.c counts it).
-#   turnip-kgsl-present-wait: the same for Vulkan and for Zink, which presents through Turnip.
-#     Mesa's X11 code waited for the GPU in mailbox mode only (gramarye/vkteartest.c counts it).
+# mesa-for-android-container tree at the revision of their 27.0.0-devel-20261025-r2 release,
+# configured as their CI does but with freedreno-kmds=msm,kgsl, plus the fix in patches/.
+# KGSL puts no fence on a buffer, so an X server handed a frame has nothing to wait on and copies
+# it while the GPU is still drawing: tearing (gramarye/teartest.c and vkteartest.c count it).
+#   OpenGL (freedreno): fixed in their tree since 20261025. It gives the server a fence to wait
+#     on with each Present, which Tessera's X server honours.
+#   turnip-kgsl-present-wait (ours): the same for Vulkan and for Zink, which presents through
+#     Turnip. Mesa's X11 code waits for the GPU in mailbox mode only; with this, in every mode.
 #
 # Runs on an x86-64 Linux PC, in an arm64 container of the env's own distro under qemu-user (needs
 # podman, and qemu-user-static registered with binfmt_misc), so no phone does the compiling. A
@@ -36,7 +36,7 @@ case "${1:-debian}" in
 esac
 SRC=${MESA_SRC:-$WORK/src}
 OUT=${MESA_OUT:-$OUT}
-REV=${MESA_REV:-98f3d6229d61452cef80f8563af7c56ae599dc14}
+REV=${MESA_REV:-b84f02a4514983ea9b2d96971cde72720c377320}
 CCACHE_DIR=${CCACHE_DIR:-$OUT/ccache}
 mkdir -p "$SRC" "$OUT/build" "$OUT/dist" "$CCACHE_DIR"
 

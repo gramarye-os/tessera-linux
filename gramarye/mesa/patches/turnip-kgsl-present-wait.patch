@@ -1,4 +1,4 @@
-From 8ae8f0b6e931d85dfe98a34e109f569dba18f92a Mon Sep 17 00:00:00 2001
+From 12ab4ca92ae747896be15bf644bce2b9a0c08ec1 Mon Sep 17 00:00:00 2001
 From: Chris Anderson <chris@raitechnology.com>
 Date: Sun, 15 Nov 2026 05:42:23 -0800
 Subject: [PATCH] tu/kgsl, wsi/x11: wait for an image's rendering before it is
@@ -53,27 +53,27 @@ index 5d2604f..7350ec1 100644
  
     return VK_SUCCESS;
 diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
-index cfb921d..f570c2a 100644
+index fef8aee..c81a98c 100644
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
-@@ -136,6 +136,12 @@ struct wsi_device {
-       /* Never report VK_SUBOPTIMAL_KHR. Used to workaround
+@@ -137,6 +137,12 @@ struct wsi_device {
         * games that cannot handle SUBOPTIMAL correctly. */
        bool ignore_suboptimal;
-+
+ 
 +      /* Wait for an image's rendering before it is presented, in every
 +       * present mode. For drivers whose kernel interface attaches no fence
 +       * to a dma-buf (kgsl), where the X server cannot wait for it.
 +       */
 +      bool wait_for_fences;
-    } x11;
- 
-    struct {
++
+       /* Select and read Present events on a separate connection to the X
+        * server, so the WSI never reads from the application's connection. */
+       bool dedicated_event_connection;
 diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
-index 4e17d6a..04edf72 100644
+index 166a88a..e9277bc 100644
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -1993,6 +1993,13 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
+@@ -2056,6 +2056,13 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
                            struct wsi_x11_connection *wsi_conn,
                            VkPresentModeKHR present_mode)
  {
