@@ -1,0 +1,89 @@
+From 8ae8f0b6e931d85dfe98a34e109f569dba18f92a Mon Sep 17 00:00:00 2001
+From: Chris Anderson <chris@raitechnology.com>
+Date: Sun, 15 Nov 2026 05:42:23 -0800
+Subject: [PATCH] tu/kgsl, wsi/x11: wait for an image's rendering before it is
+ presented
+
+kgsl never adds a fence to a dma-buf's reservation object. The X11 WSI
+waits for an image's rendering only in mailbox mode; in fifo and immediate
+it sends PresentPixmap at once and leaves the wait to the X server, which
+has nothing to wait on. A server that copies the pixmap reads a frame the
+GPU is still drawing: with a server that copies on the CPU and holds a
+present 4 ms, an Adreno 830 showed 132 torn frames of 150 in fifo mode and
+141 in immediate at 15 ms of GPU work per frame, 0 in mailbox.
+
+Add wsi_device::x11.wait_for_fences, which makes the present queue thread
+wait for the image's fence in every present mode, and set it in turnip on
+kgsl. Zink presents through the same swapchain, so it is covered too.
+TU_KGSL_PRESENT_WAIT=0 turns the wait off.
+---
+ src/freedreno/vulkan/tu_wsi.cc  | 12 ++++++++++++
+ src/vulkan/wsi/wsi_common.h     |  6 ++++++
+ src/vulkan/wsi/wsi_common_x11.c |  7 +++++++
+ 3 files changed, 25 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_wsi.cc b/src/freedreno/vulkan/tu_wsi.cc
+index 5d2604f..7350ec1 100644
+--- a/src/freedreno/vulkan/tu_wsi.cc
++++ b/src/freedreno/vulkan/tu_wsi.cc
+@@ -17,6 +17,8 @@
+ 
+ #include <string.h>
+ 
++#include "util/u_debug.h"
++
+ static bool
+ tu_wsi_is_kgsl(const struct tu_physical_device *pdevice)
+ {
+@@ -67,6 +69,16 @@ tu_wsi_init(struct tu_physical_device *physical_device)
+    physical_device->wsi_device.can_present_on_device =
+       tu_wsi_can_present_on_device;
+ 
++   /* kgsl never puts a fence on a dma-buf, so an X server handed a swapchain
++    * image reads it while the GPU may still be rendering it. Have the X11
++    * WSI wait for the rendering before PresentPixmap, as it already does in
++    * mailbox mode. TU_KGSL_PRESENT_WAIT=0 turns it off, to measure what the
++    * wait costs or what it hides.
++    */
++   physical_device->wsi_device.x11.wait_for_fences =
++      tu_wsi_is_kgsl(physical_device) &&
++      debug_get_bool_option("TU_KGSL_PRESENT_WAIT", true);
++
+    physical_device->vk.wsi_device = &physical_device->wsi_device;
+ 
+    return VK_SUCCESS;
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index cfb921d..f570c2a 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -136,6 +136,12 @@ struct wsi_device {
+       /* Never report VK_SUBOPTIMAL_KHR. Used to workaround
+        * games that cannot handle SUBOPTIMAL correctly. */
+       bool ignore_suboptimal;
++
++      /* Wait for an image's rendering before it is presented, in every
++       * present mode. For drivers whose kernel interface attaches no fence
++       * to a dma-buf (kgsl), where the X server cannot wait for it.
++       */
++      bool wait_for_fences;
+    } x11;
+ 
+    struct {
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index 4e17d6a..04edf72 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1993,6 +1993,13 @@ x11_needs_wait_for_fences(const struct wsi_device *wsi_device,
+                           struct wsi_x11_connection *wsi_conn,
+                           VkPresentModeKHR present_mode)
+ {
++   /* The driver's kernel interface puts no fence on the image's dma-buf, so
++    * the X server has nothing to wait on and would read an image the GPU is
++    * still rendering, in any present mode.
++    */
++   if (wsi_device->x11.wait_for_fences)
++      return true;
++
+    if (wsi_conn->is_xwayland) {
+       return false;
+    }

@@ -10,6 +10,8 @@
 #   freedreno-kgsl-present-wait: freedreno finishes a frame before handing it to the X server.
 #     KGSL puts no fence on the buffer, so a server has nothing to wait on and copied frames the
 #     GPU was still drawing (tearing; gramarye/teartest.c counts it).
+#   turnip-kgsl-present-wait: the same for Vulkan and for Zink, which presents through Turnip.
+#     Mesa's X11 code waited for the GPU in mailbox mode only (gramarye/vkteartest.c counts it).
 #
 # Runs on an x86-64 Linux PC, in an arm64 Debian container under qemu-user (needs podman, and
 # qemu-user-static registered with binfmt_misc), so no phone does the compiling. On 32 threads:
