@@ -140,6 +140,18 @@ mkdir -p /dev/shm
 # Keep POSIX shared-memory files on a private tmpfs instead of the container-wide /dev/shm.
 mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 
+# Android lists the phone's PCI devices in /sys but lets nobody in an env read them, and libpci
+# exits the program on that error: Chromium's GPU process died of it three times and Chromium
+# then drew without the GPU. Where a device can't be read, the session gets an empty list.
+for pci in /sys/bus/pci/devices/*; do
+  [ -e "$pci" ] || [ -L "$pci" ] || continue
+  if ! cat "$pci/vendor" >/dev/null 2>&1; then
+    mount -t tmpfs -o ro,nosuid,nodev,noexec,size=4k tmpfs /sys/bus/pci/devices 2>/dev/null ||
+      echo "tessera: couldn't hide the PCI devices this env can't read" >&2
+    break
+  fi
+done
+
 # LLVM (llvmpipe's shader JIT) picks instructions by core model, not by what the kernel enables:
 # Cortex-X3 and A715 have SVE, Android kernels leave it off, and OpenGL apps drawing in software
 # died of SIGILL. Every core is named a Cortex-A78 unless SVE is on.
