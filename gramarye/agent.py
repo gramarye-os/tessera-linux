@@ -75,6 +75,9 @@ UNITS = "/etc/aohp/system"
 MESA_FILE = os.environ.get("TESSERA_MESA_FILE", "/usr/share/tessera/mesa")
 LIB_DIRS = os.environ.get("TESSERA_LIB_DIRS", "/usr/lib/*-linux-gnu:/usr/lib64:/usr/lib").split(":")
 BUILD = re.compile(rb"^git-[0-9a-f]{7,40}$")
+# While this file is there, a session's X server keeps its hold of Presents whatever the Mesa
+# says: for an env where doing without the hold goes wrong.   touch /etc/tessera/keep-present-hold
+HOLD_FILE = os.environ.get("TESSERA_HOLD_FILE", "/etc/tessera/keep-present-hold")
 XROOT = "/var/lib/tessera/x"  # on the rootfs: the host side sees it under $AOHP_ROOTFS
 # What a session's helpers and the launcher tell each other through the X folder (see mirror()):
 # files a helper replaces whole, files it appends to, the pipes it takes commands from, and the
@@ -196,13 +199,14 @@ def x_script(xdir, pkg, abi, unit, display, tag):
     An Android GPU driver puts nothing on a buffer for the server to wait on, so the server holds
     each Present of a client's buffer a few milliseconds, which costs a refresh, unless it is told
     that its clients' drivers wait for the GPU themselves. A server that doesn't know the setting
-    ignores it."""
+    ignores it. HOLD_FILE keeps the hold in any case."""
+    told = "export TERMUX_X11_PRESENT_SETTLE_US=0; " if frames_finished() and not os.path.exists(HOLD_FILE) else ""
     return (
         "export TMPDIR=$AOHP_ROOTFS%s; export XKB_CONFIG_ROOT=$AOHP_ROOTFS/usr/share/X11/xkb; %s"
         "for f in /data/app/*/%s-*/base.apk; do export CLASSPATH=$f; "
         "export XLORIE_LIBRARY=${f%%/base.apk}/lib/%s/libXlorie.so; break; done; "
         "exec /system/bin/app_process / --nice-name=%s com.termux.x11.CmdEntryPoint :%d -tag %s"
-    ) % (xdir, "export TERMUX_X11_PRESENT_SETTLE_US=0; " if frames_finished() else "", pkg, abi, unit, display, tag)
+    ) % (xdir, told, pkg, abi, unit, display, tag)
 
 
 def x_start(sid, display, tag, pkg):

@@ -10,7 +10,8 @@ import importlib.util, os, shutil, sys, tempfile
 here = os.path.dirname(os.path.abspath(__file__))
 work = tempfile.mkdtemp(prefix='tessera-mesa-')
 lib = os.path.join(work, 'lib'); os.mkdir(lib)
-os.environ.update(TESSERA_MESA_FILE=os.path.join(work, 'mesa'), TESSERA_LIB_DIRS='%s/li*:%s/none' % (work, work))
+os.environ.update(TESSERA_MESA_FILE=os.path.join(work, 'mesa'), TESSERA_LIB_DIRS='%s/li*:%s/none' % (work, work),
+                  TESSERA_HOLD_FILE=os.path.join(work, 'keep-present-hold'))
 spec = importlib.util.spec_from_file_location('agent', os.path.join(here, 'agent.py'))
 agent = importlib.util.module_from_spec(spec); spec.loader.exec_module(agent)
 
@@ -55,6 +56,12 @@ try:
           'export XLORIE_LIBRARY=${f%/base.apk}/lib/arm64/libXlorie.so; break; done; '
           'exec /system/bin/app_process / --nice-name=tessera-x-s1 com.termux.x11.CmdEntryPoint :1 -tag tag', script)
     check('nothing in it ends the quotes of its unit file', "'" not in script, script)
+    open(agent.HOLD_FILE, 'w').close()
+    script = agent.x_script('/var/lib/tessera/x/s1', 'com.daryan.tessera', 'arm64', 'tessera-x-s1', 1, 'tag')
+    check('the env can keep the hold, whatever its Mesa says', 'PRESENT_SETTLE' not in script and agent.frames_finished(), script)
+    os.unlink(agent.HOLD_FILE)
+    script = agent.x_script('/var/lib/tessera/x/s1', 'com.daryan.tessera', 'arm64', 'tessera-x-s1', 1, 'tag')
+    check('and gives it up again when that file goes', SETTING in script, script)
     said(None)
     script = agent.x_script('/var/lib/tessera/x/s1', 'com.daryan.tessera', 'arm64', 'tessera-x-s1', 1, 'tag')
     check('and is told nothing when the Mesa says nothing', 'PRESENT_SETTLE' not in script, script)
