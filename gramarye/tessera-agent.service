@@ -4,6 +4,8 @@
 Description=Tessera agent: starts the apps Tessera (the Android launcher) asks for in this env
 
 [Service]
+# The token and what this env can do, made on the phone: see setup.sh.
+ExecStartPre=/bin/sh /opt/tessera/setup.sh
 ExecStart=/usr/bin/python3 /opt/tessera/agent.py
 Restart=on-failure
 RestartSec=2
