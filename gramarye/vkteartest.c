@@ -11,7 +11,7 @@
  *
  *   gcc -O2 -o /var/tmp/vkteartest vkteartest.c -lX11 -lvulkan
  *   python3 /var/tmp/in_session.py <pid of the app> -- /var/tmp/vkteartest plain|finish \
- *       [frames=300] [layers=40] [width=480] [height=800] [fps=30] [immediate|mailbox|fifo]
+ *       [frames=300] [layers=40] [width=480] [height=800] [fps=30] [immediate|mailbox|fifo] [images]
  * "finish" waits for the GPU before each present, so no frame can tear then. The last argument is
  * the swapchain's present mode (default: immediate if the driver has it, then mailbox, then fifo);
  * Mesa treats them differently, and fifo is what an app that waits for vsync uses.
@@ -75,7 +75,10 @@ int main(int argc, char **argv) {
     for (uint32_t i = 0; i < nm; i++) if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR && (!*asked || !strcmp(asked, "immediate"))) mode = modes[i];
     if (*asked && strcmp(asked, mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo")) { printf("no present mode %s here\n", asked); return 1; }
     VkExtent2D ext = caps.currentExtent.width == 0xffffffffu ? (VkExtent2D) {W, H} : caps.currentExtent;
-    uint32_t want = caps.minImageCount + 1; if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
+    /* [images]: how many images to ask for (default: one more than the least the surface says). The
+     * driver may give more, and how many it gives per present mode is printed. */
+    uint32_t want = argc > 8 && atoi(argv[8]) > 0 ? (uint32_t) atoi(argv[8]) : caps.minImageCount + 1;
+    if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha)) alpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR : VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
     VkSwapchainCreateInfoKHR sci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = surf, .minImageCount = want, .imageFormat = fmt.format,
@@ -83,8 +86,9 @@ int main(int argc, char **argv) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform, .compositeAlpha = alpha, .presentMode = mode, .clipped = VK_TRUE};
     VkSwapchainKHR sc; CK(vkCreateSwapchainKHR(dev, &sci, 0, &sc));
     uint32_t ni = 16; VkImage imgs[16]; CK(vkGetSwapchainImagesKHR(dev, sc, &ni, imgs));
-    printf("%s, format %d, present mode %s, %u images, %ux%u\n", pp.deviceName, (int) fmt.format,
-           mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo", ni, ext.width, ext.height);
+    printf("%s, format %d, present mode %s, %u images (asked %u, surface's least %u), %ux%u\n", pp.deviceName, (int) fmt.format,
+           mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo", ni, want, caps.minImageCount,
+           ext.width, ext.height);
 
     VkAttachmentDescription att = {.format = fmt.format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
