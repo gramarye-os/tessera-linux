@@ -396,7 +396,9 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * Pairs with the phone's gramarye env without a code typed, where the phone's own system gives
      * this app one ([AohpAutoPair]), and takes that env as the backend when the user has chosen
      * none yet. Not after Unpair, until the user picks the gramarye backend again or pairs by hand.
+     * One at a time: a second code asked for would cancel the first before it is used.
      */
+    @Synchronized
     private fun autoPairGramarye() {
         val chosen = prefs.getString(KEY_MODE, null)?.let { runCatching { BackendMode.valueOf(it) }.getOrNull() }
         val target = container.aohpTarget()
@@ -413,6 +415,21 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             _mode.value = BackendMode.AOHP
             _flathubReady.value = null
             prefs.edit().putString(KEY_MODE, BackendMode.AOHP.name).apply()
+        }
+    }
+
+    /**
+     * The launcher is back in front. A gramarye env that came up since the last look (a new phone
+     * makes its env during its first minute) is paired with now; otherwise only the menu is read.
+     */
+    fun onResumed() {
+        viewModelScope.launch {
+            val paired = withContext(Dispatchers.IO) {
+                val before = container.aohpTarget()
+                autoPairGramarye()
+                container.aohpTarget() != before
+            }
+            if (paired) refresh() else scanSystemApps()
         }
     }
 

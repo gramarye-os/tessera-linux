@@ -116,8 +116,9 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
     val gramarye by vm.gramarye.collectAsStateWithLifecycle()
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
-    // Apps installed from a terminal while the launcher was away show up when it's back.
-    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { vm.scanSystemApps() }
+    // Apps installed from a terminal while the launcher was away show up when it's back, and so
+    // does a gramarye env that came up meanwhile.
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { vm.onResumed() }
     val pinned by vm.tabStore.pinned.collectAsStateWithLifecycle()
     val permissionOverrides by vm.permissionOverrides.collectAsStateWithLifecycle()
     val gpuEnabled by vm.gpuEnabled.collectAsStateWithLifecycle()
