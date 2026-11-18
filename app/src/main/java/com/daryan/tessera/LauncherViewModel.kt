@@ -13,6 +13,7 @@ import com.daryan.tessera.container.AohpConfigStore
 import com.daryan.tessera.container.ConfigStore
 import com.daryan.tessera.container.AohpTarget
 import com.daryan.tessera.container.AohpPairing
+import com.daryan.tessera.container.AohpAutoPair
 import com.daryan.tessera.container.FsGrant
 import com.daryan.tessera.files.FileBrowser
 import com.daryan.tessera.files.FilesEngine
@@ -369,6 +370,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             val result = withContext(Dispatchers.IO) {
                 AohpPairing.pair(code).also { if (it is AohpPairing.Paired.Done) container.setAohpTarget(it.target) }
             }
+            // Pairing by hand takes back an earlier Unpair: see autoPairGramarye.
+            if (result is AohpPairing.Paired.Done) prefs.edit().remove(KEY_AUTO_PAIR_OFF).apply()
             _pairing.value = when (result) {
                 is AohpPairing.Paired.Done -> PairingState.Idle
                 is AohpPairing.Paired.Refused -> PairingState.Failed(result.why)
@@ -381,9 +384,35 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     /** Forgets the env's token. Sessions that run keep running; nothing new starts until paired again. */
     fun unpairGramarye() {
         viewModelScope.launch {
+            // Stays unpaired: without this the next refresh would pair again by itself.
+            prefs.edit().putBoolean(KEY_AUTO_PAIR_OFF, true).apply()
             withContext(Dispatchers.IO) { container.setAohpTarget(null) }
             _pairing.value = PairingState.Idle
             refresh()
+        }
+    }
+
+    /**
+     * Pairs with the phone's gramarye env without a code typed, where the phone's own system gives
+     * this app one ([AohpAutoPair]), and takes that env as the backend when the user has chosen
+     * none yet. Not after Unpair, until the user picks the gramarye backend again or pairs by hand.
+     */
+    private fun autoPairGramarye() {
+        val chosen = prefs.getString(KEY_MODE, null)?.let { runCatching { BackendMode.valueOf(it) }.getOrNull() }
+        val target = container.aohpTarget()
+        val wanted = AohpAutoPair.wanted(
+            off = prefs.getBoolean(KEY_AUTO_PAIR_OFF, false), chosen = chosen, paired = target != null,
+            refused = { target != null && AohpPairing.ping(target) == AohpPairing.Pinged.Refused },
+        )
+        if (!wanted) return
+        val code = AohpAutoPair.code(getApplication()) ?: return
+        val done = AohpPairing.pair(code) as? AohpPairing.Paired.Done ?: return
+        container.setAohpTarget(done.target)
+        Log.i(TAG, "paired with the gramarye env by itself")
+        if (_mode.value != BackendMode.AOHP) {
+            _mode.value = BackendMode.AOHP
+            _flathubReady.value = null
+            prefs.edit().putString(KEY_MODE, BackendMode.AOHP.name).apply()
         }
     }
 
@@ -732,6 +761,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         viewModelScope.launch {
             _status.value = null
+            // First, so that what follows checks the backend this may have just chosen.
+            withContext(Dispatchers.IO) { autoPairGramarye() }
             val s = withContext(Dispatchers.IO) {
                 probe.probe().let { s ->
                     s.copy(
@@ -939,6 +970,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setMode(mode: BackendMode) {
         _mode.value = mode
+        // Picking the gramarye backend asks for it again after an Unpair.
+        if (mode == BackendMode.AOHP) prefs.edit().remove(KEY_AUTO_PAIR_OFF).apply()
         // Each mode's system has its own Flathub setup.
         _flathubReady.value = null
         prefs.edit().putString(KEY_MODE, mode.name).apply()
@@ -1431,6 +1464,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "Launcher"
         const val KEY_MODE = "backend_mode"
+        /** Set by Unpair: no pairing without the user until they ask for the gramarye backend again. */
+        const val KEY_AUTO_PAIR_OFF = "gramarye_auto_pair_off"
         /** Stands for a gramarye env where a Droidspaces container's root folder is named. */
         const val ENV_ROOT = "gramarye-env:"
         const val KEY_DS_CONTAINER = "droidspaces_container"

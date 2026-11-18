@@ -19,6 +19,12 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
+    <!-- The system app that hands this app a pairing code on a gramarye phone (AohpAutoPair). Not
+         needed while the target level is 28; named for the day it rises. -->
+    <queries>
+        <provider android:authorities="org.aohp.driver.pairing" />
+    </queries>
+
     <application
         android:name=".LauncherApplication"
         android:allowBackup="false"
