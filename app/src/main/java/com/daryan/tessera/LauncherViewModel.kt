@@ -640,16 +640,20 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             var lastRoot: String? = null
             // Not while a check runs (status null): the menu would blink back to dpkg's view.
-            combine(_mode, _status.filterNotNull(), entries, container.registry.installed) { mode, s, list, _ ->
+            combine(_mode, _status.filterNotNull(), entries, container.registry.installed) { mode, s, list, installed ->
                 val su = s.su
                 val root = s.droidspacesSelected?.hostRoot
-                when {
+                val query = when {
                     // A gramarye env is asked through its agent: no su, and its paths are its own.
                     mode == BackendMode.AOHP -> Triple(null, ENV_ROOT, ContainerMenu.programsOf(list))
                     mode != BackendMode.DROIDSPACES || su == null || root == null -> null
                     else -> Triple(su, root, ContainerMenu.programsOf(list))
                 }
-            }.distinctUntilChanged().collectLatest { q ->
+                // With the packages, so an install asks again: the same programs in the same
+                // container was no change, and an app just installed stayed out of the menu.
+                query?.let { it to installed }
+            }.distinctUntilChanged().collectLatest { asked ->
+                val q = asked?.first
                 // Only the programs of this container count; another's would show what isn't here.
                 if (q?.second != lastRoot) _containerPrograms.value = null
                 lastRoot = q?.second
@@ -724,7 +728,9 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelInstall() = container.installer.cancel()
 
     /** Whether this phone and build can use hardware graphics at all. */
-    fun gpuAvailable() = GpuDriver.available(getApplication())
+    fun gpuAvailable() =
+        // A gramarye env draws with its own Mesa, not the driver this app may carry.
+        if (_mode.value == BackendMode.AOHP) container.aohp()?.hasGpu == true else GpuDriver.available(getApplication())
 
     private val _gpuEnabled = MutableStateFlow(sessions.gpuEnabled())
     val gpuEnabled: StateFlow<Boolean> = _gpuEnabled
