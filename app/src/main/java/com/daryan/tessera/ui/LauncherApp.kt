@@ -114,6 +114,8 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
     val removingLinux by vm.removingLinux.collectAsStateWithLifecycle()
     val containerBusy by vm.containerBusy.collectAsStateWithLifecycle()
     val gramarye by vm.gramarye.collectAsStateWithLifecycle()
+    // The Droidspaces containers the env's agent can start an app in; none outside gramarye mode.
+    val offeredContainers = gramarye?.target?.containers.orEmpty()
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     val apps by vm.apps.collectAsStateWithLifecycle()
     // Apps installed from a terminal while the launcher was away show up when it's back, and so
@@ -153,6 +155,7 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
     var editingShortcut by remember { mutableStateOf<Shortcut?>(null) }
     var graphicsApp by remember { mutableStateOf<PermissionManifest?>(null) }
     var execApp by remember { mutableStateOf<PermissionManifest?>(null) }
+    var containerApp by remember { mutableStateOf<PermissionManifest?>(null) }
     var showTrackpad by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     val filesUi = remember { FilesUi() }
@@ -497,6 +500,10 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
                         }
                     },
                     onEditExec = { execApp = it },
+                    // Offered by the env's agent; an app already sent to one can always be moved back.
+                    onPickContainer = if (offeredContainers.isNotEmpty() || apps.any { it.container != null }) {
+                        { containerApp = it }
+                    } else null,
                     graphics = gpuGraphics || appearance.enabled,
                     onGraphics = { graphicsApp = it },
                     layout = homeLayout,
@@ -695,6 +702,17 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
             fixes = fixes,
             onFix = { fix, on -> vm.setGpuFix(app, fix, on) },
             onDismiss = { graphicsApp = null },
+        )
+    }
+
+    // Looked up by id, so the dialog shows the choice as saved.
+    apps.firstOrNull { it.id == containerApp?.id }?.let { app ->
+        ContainerDialog(
+            appName = app.name,
+            current = app.container,
+            offered = offeredContainers,
+            onSave = { vm.setContainer(app, it) },
+            onDismiss = { containerApp = null },
         )
     }
 

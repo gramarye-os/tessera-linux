@@ -35,12 +35,18 @@ data class PermissionManifest(
     val desktop: Boolean = false,
     /** A Flathub app: where its files are and what to run; see [FlatpakRef]. */
     val flatpak: FlatpakRef? = null,
+    /**
+     * Gramarye mode only: the Droidspaces container the app runs in, by name, instead of the
+     * env itself. The env's agent starts it there ([AohpBackend]); see [ContainerOverrides].
+     */
+    val container: String? = null,
 ) {
     fun validate(): List<String> = buildList {
         if (!ID.matches(id)) add("id '$id' must match ${ID.pattern}")
         if (exec.isEmpty()) add("exec is empty")
         if (gui && !permissions.display) add("gui apps need the display permission")
         if (desktop && !gui) add("a desktop needs gui")
+        if (container != null && !CONTAINER.matches(container)) add("container '$container' is not a container's name")
         permissions.filesystem.forEach { addAll(it.validate()) }
         packages.forEach { if (!PACKAGE.matches(it)) add("package '$it' is not a valid package name") }
         permissions.devices.forEach {
@@ -52,6 +58,8 @@ data class PermissionManifest(
         private val ID = Regex("[a-z0-9][a-z0-9._-]{0,63}")
         /** Debian package names; also keeps them safe to put on an apt command line. */
         private val PACKAGE = Regex("[a-z0-9][a-z0-9+.-]{0,127}")
+        /** A Droidspaces container's name as the env's agent takes it: a plain word, never an option. */
+        val CONTAINER = Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
         private val json = Json { ignoreUnknownKeys = true }
 
         fun parse(text: String): PermissionManifest = json.decodeFromString(serializer(), text)

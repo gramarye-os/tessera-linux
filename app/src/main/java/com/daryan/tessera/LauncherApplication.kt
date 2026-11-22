@@ -176,6 +176,8 @@ class LauncherContainer(private val app: Application) {
     val permissions = com.daryan.tessera.container.PermissionOverrides(java.io.File(app.filesDir, "permissions.json"))
     /** Commands the user changed from an app's long-press menu; applied over its manifest. */
     val exec = com.daryan.tessera.container.ExecOverrides(java.io.File(app.filesDir, "exec.json"))
+    /** Where the user chose to run an app in gramarye mode: a Droidspaces container's name, by app id. */
+    val targets = com.daryan.tessera.container.ContainerOverrides(java.io.File(app.filesDir, "containers.json"))
     /** Whether this run already looked for GUI helper packages missing from the container. */
     /** The modes (each has its own system) already checked for missing GUI helpers this run. */
     val guiHelpersChecked: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())

@@ -189,6 +189,8 @@ fun AppsPager(
     onTrackpad: () -> Unit,
     /** Changes the command an app runs; shortcuts edit theirs in [onEditShortcut] instead. */
     onEditExec: (PermissionManifest) -> Unit,
+    /** Chooses where an app runs, when the gramarye env offers containers; null when it offers none. */
+    onPickContainer: ((PermissionManifest) -> Unit)? = null,
     /** Whether [onGraphics] has anything for windowed apps (theming, or the phone's GPU driver). */
     graphics: Boolean,
     onGraphics: (PermissionManifest) -> Unit,
@@ -226,6 +228,7 @@ fun AppsPager(
             onEdit = if (Shortcut.isShortcut(app)) ({ onEditShortcut(app) }) else null,
             // A shortcut's "Edit" already is its command; everything else gets this.
             onEditExec = if (Shortcut.isShortcut(app)) null else ({ onEditExec(app) }),
+            onPickContainer = onPickContainer?.let { pick -> { pick(app) } },
             onGraphics = if (graphics && app.gui) ({ onGraphics(app) }) else null,
             homeScreen = homeScreen,
             modifier = modifier,
@@ -616,6 +619,8 @@ private fun AppTile(
     onEdit: (() -> Unit)?,
     /** For everything else: change the command it runs. */
     onEditExec: (() -> Unit)?,
+    /** In gramarye mode with containers on offer: choose where it runs. */
+    onPickContainer: (() -> Unit)? = null,
     /** For windowed apps with the GPU driver: their graphics settings. */
     onGraphics: (() -> Unit)?,
     /** Whether the phone's home screen takes icons. */
@@ -754,6 +759,13 @@ private fun AppTile(
                 text = { Text("Edit command") },
                 leadingIcon = { Icon(LauncherIcons.Code, null) },
                 onClick = { menu = false; onEditExec() },
+            )
+        }
+        if (onPickContainer != null) {
+            DropdownMenuItem(
+                text = { Text("Runs in…") },
+                leadingIcon = { Icon(LauncherIcons.Terminal, null) },
+                onClick = { menu = false; onPickContainer() },
             )
         }
         HorizontalDivider()

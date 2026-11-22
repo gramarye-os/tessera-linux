@@ -267,14 +267,16 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         container.shortcuts.delete(Shortcut.idOf(app))
         container.permissions.reset(app.id)
         container.exec.reset(app.id)
+        container.targets.reset(app.id)
     }
 
-    /** [app] with the permissions and the command the user set, where they changed either. */
-    private fun withOverrides(app: PermissionManifest) = container.exec.apply(container.permissions.apply(app))
+    /** [app] with the permissions, the command and the container the user set, where they changed any. */
+    private fun withOverrides(app: PermissionManifest) =
+        container.targets.apply(container.exec.apply(container.permissions.apply(app)))
 
-    /** Every app, with the permissions and commands the user set where they changed any. */
+    /** Every app, with the permissions, commands and containers the user set where they changed any. */
     val apps: StateFlow<List<PermissionManifest>> =
-        combine(manifests, container.permissions.overrides, container.exec.overrides) { list, _, _ ->
+        combine(manifests, container.permissions.overrides, container.exec.overrides, container.targets.overrides) { list, _, _, _ ->
             list.map(::withOverrides)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, bundled.map(::withOverrides))
 
@@ -299,6 +301,12 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         container.exec.set(app, exec, defaultExec(app.id) ?: app.exec)
 
     fun resetExec(appId: String) = container.exec.reset(appId)
+
+    /**
+     * Has [app] run in the Droidspaces container [name] from its next launch, or in the gramarye
+     * env itself again (null); returns what's wrong with the name, if anything.
+     */
+    fun setContainer(app: PermissionManifest, name: String?): List<String> = container.targets.set(app, name)
 
     val catalog: StateFlow<CatalogState> = container.catalog.state
     val flathubCatalog: StateFlow<CatalogState> = container.flathub.state

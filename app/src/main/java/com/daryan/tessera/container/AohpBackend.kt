@@ -30,11 +30,14 @@ data class AohpTarget(
     val glDriver: String? = null,
     val hostX: Boolean = false,
     val privateDev: Boolean = false,
+    /** The Droidspaces containers the env's agent can start an app in, by name; as it last said. */
+    val containers: List<String> = emptyList(),
 ) {
     /** What the env can do, as the words [parse] reads after the token. */
     val caps: String
         get() = listOfNotNull(
             vulkanIcd?.let { "vk=$it" }, glDriver?.let { "gl=$it" }, "x=host".takeIf { hostX }, "dev=private".takeIf { privateDev },
+            containers.takeIf { it.isNotEmpty() }?.joinToString(",", prefix = "ds="),
         ).joinToString(" ")
 
     /** The agent file's line for this, which [parse] reads back. */
@@ -65,6 +68,8 @@ data class AohpTarget(
                     word.startsWith("gl=") && WORD.matches(value) -> target.copy(glDriver = value)
                     word == "x=host" -> target.copy(hostX = true)
                     word == "dev=private" -> target.copy(privateDev = true)
+                    word.startsWith("ds=") && value.split(',').all(PermissionManifest.CONTAINER::matches) ->
+                        target.copy(containers = value.split(',').distinct())
                     else -> return null
                 }
             }
@@ -150,7 +155,7 @@ class AohpBackend(
     }
 
     override fun buildLaunch(app: PermissionManifest, session: Session): LaunchSpec =
-        launchSpec(session, settings(app, session))
+        launchSpec(session, settings(app, session), app.container)
 
     /** What a script run in the env ([run]) left: its exit status and what it printed. */
     class Ran(val code: Int, val bytes: ByteArray) {
@@ -217,9 +222,14 @@ class AohpBackend(
             .map { it.removePrefix(EXISTS_MARK) }.filterTo(mutableSetOf()) { it in wanted }
     }
 
-    /** The first line the agent reads, less the terminal's rows and columns, which the relay adds. */
-    internal fun hello(session: Session, settings: String) =
-        "TESSERA2 ${target.token} ${session.id} ${encodeSettings(settings)}"
+    /**
+     * The first line the agent reads, less the terminal's rows and columns, which the relay adds.
+     * With a [container] it is the line that names one: the agent starts the session there
+     * rather than in the env. Without, the env decides (itself, unless it has a default).
+     */
+    internal fun hello(session: Session, settings: String, container: String? = null) =
+        if (container == null) "TESSERA2 ${target.token} ${session.id} ${encodeSettings(settings)}"
+        else "TESSERA3 ${target.token} ${session.id} $container ${encodeSettings(settings)}"
 
     /**
      * Has the agent start [session]'s X server on the env's side, for the window tagged [tag] of
@@ -262,12 +272,12 @@ class AohpBackend(
         return line.toString()
     }
 
-    private fun launchSpec(session: Session, settings: String): LaunchSpec {
+    private fun launchSpec(session: Session, settings: String, container: String? = null): LaunchSpec {
         // In a file, not an argument or the environment: the settings carry the GUI helpers'
         // source and outgrow what one of those may hold.
         val hello = File(paths.sessionDir(session), "aohp-hello")
         hello.parentFile?.mkdirs()
-        hello.writeText(hello(session, settings))
+        hello.writeText(hello(session, settings, container))
         hello.setReadable(false, false)
         hello.setReadable(true, true)
         // The relay (cpp/relay.c) reads that line, adds this terminal's size, and carries the
