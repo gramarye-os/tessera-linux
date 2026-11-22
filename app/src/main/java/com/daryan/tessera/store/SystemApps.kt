@@ -27,7 +27,7 @@ class SystemApps {
         val dir = File(rootfs, APPLICATIONS.removePrefix("/"))
         val files = dir.listFiles { f -> f.name.endsWith(".desktop") }.orEmpty()
             .mapNotNull { f -> runCatching { f.name to f.readText() }.getOrNull() }
-        publish(files) { iconFile(rootfs, it) }
+        _apps.value = manifests(files) { iconFile(rootfs, it) }
     }
 
     /**
@@ -41,9 +41,17 @@ class SystemApps {
      * what the script printed, or null): the one at [rootfs] as root sees it through su, or a
      * gramarye env's own ("" then: the script runs inside it).
      */
-    suspend fun scanWith(run: (String) -> String?, rootfs: String, iconDir: File) = withContext(Dispatchers.IO) {
+    suspend fun scanWith(run: (String) -> String?, rootfs: String, iconDir: File) {
+        readWith(run, rootfs, iconDir)?.let { _apps.value = it }
+    }
+
+    /**
+     * What [scanWith] finds, handed back instead of listed: for a system beside the launcher's
+     * own (a Droidspaces container next to a gramarye env). Null when [run] gave no answer.
+     */
+    suspend fun readWith(run: (String) -> String?, rootfs: String, iconDir: File): List<PermissionManifest>? = withContext(Dispatchers.IO) {
         val listing = run("cd '$rootfs$APPLICATIONS' 2>/dev/null || exit 0; " +
-            "for f in *.desktop; do [ -f \"${'$'}f\" ] && echo \"$MARK${'$'}f\" && cat \"${'$'}f\"; done") ?: return@withContext
+            "for f in *.desktop; do [ -f \"${'$'}f\" ] && echo \"$MARK${'$'}f\" && cat \"${'$'}f\"; done") ?: return@withContext null
         val files = sections(listing).map { (name, lines) -> name to lines.joinToString("\n") }
         // Each icon's candidate paths, tried in order; the first that exists comes back as base64.
         val wanted = files.mapNotNull { (_, text) -> runCatching { DesktopEntry.parse(text) }.getOrNull()?.icon }
@@ -61,11 +69,11 @@ class SystemApps {
             file.writeBytes(bytes)
             icon to file.path
         }.toMap()
-        publish(files) { icons[it] }
+        manifests(files) { icons[it] }
     }
 
-    private fun publish(files: List<Pair<String, String>>, iconFor: (String?) -> String?) {
-        _apps.value = files.sortedBy { it.first }
+    private fun manifests(files: List<Pair<String, String>>, iconFor: (String?) -> String?): List<PermissionManifest> =
+        files.sortedBy { it.first }
             .mapNotNull { (name, text) ->
                 val entry = runCatching { DesktopEntry.parse(text) }.getOrNull() ?: return@mapNotNull null
                 if (entry.hidden || entry.name.isNullOrBlank()) return@mapNotNull null
@@ -76,7 +84,6 @@ class SystemApps {
             // The same app under two desktop files (VS Code ships code.desktop running "vscode"
             // and com.microsoft.VSCode.desktop running /usr/share/code/code): keep the first.
             .distinctBy { it.name.lowercase() }
-    }
 
     fun clear() {
         _apps.value = emptyList()

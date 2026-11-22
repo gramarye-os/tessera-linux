@@ -38,7 +38,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import com.daryan.tessera.container.ChrootBackend
 import com.daryan.tessera.container.ChrootSetup
+import com.daryan.tessera.container.AohpBackend
 import com.daryan.tessera.container.ContainerMenu
+import com.daryan.tessera.container.ContainerView
+import com.daryan.tessera.container.appsOf
+import com.daryan.tessera.container.containerApps
+import com.daryan.tessera.container.newMenuApps
 import com.daryan.tessera.container.GuestRelease
 import com.daryan.tessera.container.missingPackages
 import com.daryan.tessera.store.CatalogSource
@@ -186,28 +191,55 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
+     * What each Droidspaces container beside the gramarye env has, by name, as last read through
+     * the env's agent ([scanContainers]); empty in the other modes and where it offers none.
+     */
+    private val _containerViews = MutableStateFlow<Map<String, ContainerView>>(emptyMap())
+
+    /** Counts the env's menu scans, so the containers' are read again with it. */
+    private val containerScans = MutableStateFlow(0)
+
+    /**
      * The launcher's apps as their manifests describe them: [entries] plus the system's own menu
-     * entries. A Droidspaces container lists only what it has, being the user's own system.
+     * entries. A Droidspaces container lists only what it has, being the user's own system. A
+     * gramarye env's list ends with what only its containers have, each app set to run in its own.
      */
     private val manifests: StateFlow<List<PermissionManifest>> =
-        combine(entries, container.systemApps.apps, containerMenu) { all, system, menu ->
+        combine(entries, container.systemApps.apps, containerMenu, _containerViews) { all, system, menu, views ->
             val known = if (menu == null) all else all.filter(menu::has)
-            known + newSystemApps(system, known)
+            val own = known + newMenuApps(system, known)
+            own + containerApps(all, own, views)
         }.stateIn(
             viewModelScope, SharingStarted.Eagerly,
             if (_mode.value == BackendMode.DROIDSPACES || _mode.value == BackendMode.AOHP) emptyList() else entries.value,
         )
 
     /**
-     * The container's own menu entries, minus what the launcher lists already: same name, or
-     * the same program (Firefox's desktop file next to the bundled Firefox entry).
+     * Reads what each of [names] (the containers the env's agent offers) has: which of
+     * [programs] are there, its packages, its own menu entries. A container that didn't answer
+     * keeps what was last read; one no longer offered is dropped.
      */
-    private fun newSystemApps(system: List<PermissionManifest>, known: List<PermissionManifest>): List<PermissionManifest> {
-        fun program(m: PermissionManifest) = m.exec.firstOrNull()?.substringAfterLast('/')
-        val names = known.map { it.name.lowercase() }.toSet()
-        val programs = known.mapNotNull(::program).toSet() + known.flatMap { it.packages }
-        return system.filterNot { it.name.lowercase() in names || program(it) in programs }
+    private suspend fun scanContainers(env: AohpBackend, names: List<String>, programs: Set<String>) {
+        val before = _containerViews.value
+        val icons = File(getApplication<Application>().cacheDir, "ds-icons")
+        val views = linkedMapOf<String, ContainerView>()
+        for (name in names) {
+            val view = withContext(Dispatchers.IO) {
+                val there = env.existing(programs, name) ?: return@withContext null
+                // No dpkg there (not a Debian system): its programs alone say what it has.
+                val status = env.run("cat /var/lib/dpkg/status 2>/dev/null", container = name) ?: return@withContext null
+                val packages = if (status.code == 0) StoreRegistry.installedPackages(status.text) else emptySet()
+                val apps = container.systemApps.readWith({ env.run(it, container = name)?.text }, "", File(icons, name))
+                    ?: return@withContext null
+                ContainerView(ContainerMenu(there, packages, emptySet()), apps)
+            } ?: before[name]
+            if (view != null) views[name] = view
+        }
+        _containerViews.value = views
     }
+
+    /** The container [appId] is listed from, when the env itself doesn't have the app; null otherwise. */
+    fun homeContainer(appId: String): String? = manifests.value.firstOrNull { it.id == appId }?.container
 
     /** When chroot's menus were last read: that takes su, so coming back doesn't always redo it. */
     private var chrootScannedAt = 0L
@@ -248,6 +280,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 chrootScannedAt = now
                 viewModelScope.launch {
                     container.systemApps.scanWith({ env.run(it)?.text }, "", File(getApplication<Application>().cacheDir, "env-icons"))
+                    containerScans.value++
                 }
             }
             else -> container.systemApps.clear()
@@ -306,7 +339,14 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * Has [app] run in the Droidspaces container [name] from its next launch, or in the gramarye
      * env itself again (null); returns what's wrong with the name, if anything.
      */
-    fun setContainer(app: PermissionManifest, name: String?): List<String> = container.targets.set(app, name)
+    fun setContainer(app: PermissionManifest, name: String?): List<String> {
+        // The container an app is listed from is no choice to keep: it goes there anyway.
+        if (name == homeContainer(app.id)) {
+            container.targets.reset(app.id)
+            return emptyList()
+        }
+        return container.targets.set(app, name)
+    }
 
     val catalog: StateFlow<CatalogState> = container.catalog.state
     val flathubCatalog: StateFlow<CatalogState> = container.flathub.state
@@ -534,6 +574,14 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     init {
         refresh()
         viewModelScope.launch { apps.collect { container.launcherApps.value = it } }
+        // Each container's whole menu, for a desktop running there (see [LauncherApplication.containerApps]).
+        viewModelScope.launch {
+            combine(entries, _containerViews, container.permissions.overrides, container.exec.overrides) { all, views, _, _ ->
+                views.mapValues { (name, view) ->
+                    appsOf(view, all).map { container.exec.apply(container.permissions.apply(it)).copy(container = name) }
+                }
+            }.collect { container.containerApps.value = it }
+        }
         // Re-probe once an install finishes so Setup and the launch buttons update.
         viewModelScope.launch {
             installState.collect { if (it == InstallState.Done) refresh() }
@@ -555,7 +603,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * need) nor terminals (where "command not found" is just a typo).
      */
     fun missingFor(s: RunningSession): Missing? =
-        if (s.running || s.endedBy != null || s.exitCode == 0 || s.terminal != null || s.app.flatpak != null) null
+        // Nor an app in a container of the env's: the install would go into the env.
+        if (s.running || s.endedBy != null || s.exitCode == 0 || s.terminal != null || s.app.flatpak != null || s.app.container != null) null
         else MissingPackages.find(s.output)
 
     init {
@@ -586,6 +635,25 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    init {
+        // What the containers beside a gramarye env have ([_containerViews]): read again when
+        // the agent offers other containers, the launcher's entries change, or the env's own
+        // menu was just rescanned.
+        viewModelScope.launch {
+            combine(_mode, _gramarye, _status.filterNotNull(), entries, containerScans) { mode, env, _, list, scans ->
+                if (mode != BackendMode.AOHP) null
+                else Triple(env?.target?.containers.orEmpty(), ContainerMenu.programsOf(list), scans)
+            }.distinctUntilChanged().collectLatest { q ->
+                val env = if (q == null || q.first.isEmpty()) null else container.aohp()
+                if (q == null || env == null) {
+                    _containerViews.value = emptyMap()
+                    return@collectLatest
+                }
+                scanContainers(env, q.first, q.second)
+            }
+        }
+    }
+
     private val _reopen = Channel<PermissionManifest>(Channel.BUFFERED)
     /** Apps whose missing package was just installed, to offer opening again. */
     val reopen = _reopen.receiveAsFlow()
@@ -604,6 +672,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Finds the package with [missing] and installs it, in the queue; false when no system is ready. */
     fun installMissing(app: PermissionManifest, missing: Missing): Boolean {
+        if (app.container != null) return false
         val backend = backend() ?: return false
         if (blocker(_status.value, _mode.value) != null) return false
         val store = configStore(_status.value, _mode.value)
@@ -1045,6 +1114,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * rootfs isn't readable by the app, or the manifest names no packages.
      */
     fun installed(app: PermissionManifest, status: HostStatus?, mode: BackendMode): Boolean? = when {
+        // An app sent to a container of the env's: that system's packages say, where they were read.
+        mode == BackendMode.AOHP && app.container != null ->
+            if (app.flatpak != null || app.packages.isEmpty()) null
+            else _containerViews.value[app.container]?.menu?.packages?.let { have -> app.packages.all { it in have } }
         // A Flathub app's entry is shared by both engines; its files may be in the other's system.
         app.flatpak != null -> container.registry.flatpaks.value?.let { app.flatpak.app in it }
         // A shortcut's command is bash; what it needs is its packages.
@@ -1188,6 +1261,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * ones stay, offering Install again. False when there's nothing to remove.
      */
     fun uninstall(app: PermissionManifest): Boolean {
+        // The queue works in the env: an app in one of its containers is removed there by hand.
+        if (app.container != null) return false
         app.flatpak?.let { ref ->
             val backend = backend() ?: return false
             val store = configStore(_status.value, _mode.value)
@@ -1214,6 +1289,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
      * file lists first. False when there's no container or no owning package.
      */
     suspend fun uninstallSystemApp(app: PermissionManifest): Boolean {
+        if (app.container != null) return false
         val su = _status.value?.su
         val dsRoot = _status.value?.let(::droidspacesRoot)
         val pkg = (
@@ -1235,6 +1311,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Queues the packages behind a launcher app that isn't installed yet. */
     fun install(app: PermissionManifest): Boolean {
+        // The queue works in the env: an app set to run in a container is installed there by hand.
+        if (app.container != null) return false
         val backend = backend() ?: return false
         val store = configStore(_status.value, _mode.value)
         app.flatpak?.let { ref ->

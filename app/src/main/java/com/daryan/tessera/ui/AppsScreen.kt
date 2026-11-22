@@ -701,9 +701,12 @@ private fun AppTile(
                 textAlign = TextAlign.Center,
             )
             Text(
-                if (app.gui) "Window" else "Terminal",
+                // With the container it runs in, for an app that isn't the env's.
+                listOfNotNull(if (app.gui) "Window" else "Terminal", app.container).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

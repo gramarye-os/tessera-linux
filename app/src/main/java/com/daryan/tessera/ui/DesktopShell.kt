@@ -234,10 +234,12 @@ enum class DesktopShortcut { START, SHOW_DESKTOP, OVERVIEW }
 
 /**
  * Apps the Start menu can open in a desktop: not another desktop, or one that wants root (it
- * would run as the desktop's user). Flathub apps come too, in their own root as always.
+ * would run as the desktop's user). Flathub apps come too, in their own root as always. A
+ * desktop starts them in its own system, so only that system's apps: [container] is the
+ * Droidspaces container the desktop runs in, null for the launcher's own system.
  */
-fun desktopApps(apps: List<PermissionManifest>): List<PermissionManifest> =
-    apps.filter { !it.desktop && !it.permissions.root }
+fun desktopApps(apps: List<PermissionManifest>, container: String? = null): List<PermissionManifest> =
+    apps.filter { !it.desktop && !it.permissions.root && it.container == container }
 
 /**
  * The launcher app [window] belongs to, by its WM_CLASS against each app's program ("XTerm"
@@ -290,7 +292,8 @@ fun DesktopShell(actions: DesktopActions) {
     val session by actions.session.collectAsStateWithLifecycle()
     val allApps by actions.apps.collectAsStateWithLifecycle()
     val pins by actions.pins.collectAsStateWithLifecycle()
-    val apps = remember(allApps) { desktopApps(allApps) }
+    val home = session?.app?.container
+    val apps = remember(allApps, home) { desktopApps(allApps, home) }
     val windows = session?.windows
     val workspace = windows?.workspace ?: 0
     val workspaces = windows?.workspaces ?: 1

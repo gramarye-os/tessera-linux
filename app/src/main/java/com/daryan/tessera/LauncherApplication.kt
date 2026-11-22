@@ -190,6 +190,13 @@ class LauncherContainer(private val app: Application) {
     /** The launcher's apps as it last listed them, for a desktop's Start menu (in its own window). */
     val launcherApps = kotlinx.coroutines.flow.MutableStateFlow<List<com.daryan.tessera.container.PermissionManifest>>(emptyList())
 
+    /**
+     * Gramarye mode: everything each Droidspaces container beside the env has, by container, each
+     * app set to run there. For a desktop running in one: [launcherApps] has a container's apps
+     * only where the env lacks them.
+     */
+    val containerApps = kotlinx.coroutines.flow.MutableStateFlow<Map<String, List<com.daryan.tessera.container.PermissionManifest>>>(emptyMap())
+
     /** An app whose sheet the launcher should open (set from an X11 window's Permissions tile). */
     val showAppRequests = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 

@@ -28,8 +28,8 @@ import androidx.compose.ui.unit.dp
 /**
  * Where an app runs in gramarye mode, from its long-press menu: the env itself, or one of the
  * Droidspaces containers the env's agent offers ([offered]). The app has to be installed where
- * it is sent: the launcher lists what the env has, and doesn't look inside the containers.
- * Changes apply from the app's next launch.
+ * it is sent. An app the launcher lists from a container, the env not having it ([inEnv]
+ * false), isn't offered the env. Changes apply from the app's next launch.
  */
 @Composable
 fun ContainerDialog(
@@ -37,6 +37,8 @@ fun ContainerDialog(
     /** The container the app runs in now; null: the env. */
     current: String?,
     offered: List<String>,
+    /** Whether the env has the app; false for one that only a container has. */
+    inEnv: Boolean = true,
     /** Saves the choice (null: the env); returns what's wrong with it, and then nothing is saved. */
     onSave: (String?) -> List<String>,
     onDismiss: () -> Unit,
@@ -52,7 +54,7 @@ fun ContainerDialog(
         title = { Text("Where $appName runs") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Choice("Gramarye env", chosen == null) { chosen = null; problems = emptyList() }
+                if (inEnv) Choice("Gramarye env", chosen == null) { chosen = null; problems = emptyList() }
                 names.forEach { name ->
                     val gone = name !in offered
                     Choice(if (gone) "$name (not running)" else name, chosen == name) { chosen = name; problems = emptyList() }

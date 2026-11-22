@@ -40,3 +40,52 @@ data class ContainerMenu(
             .toSet()
     }
 }
+
+/**
+ * A system's own menu entries ([system], from its .desktop files), minus what the launcher
+ * lists already ([known]): same name, or the same program (Firefox's desktop file next to the
+ * bundled Firefox entry).
+ */
+fun newMenuApps(system: List<PermissionManifest>, known: List<PermissionManifest>): List<PermissionManifest> {
+    fun program(m: PermissionManifest) = m.exec.firstOrNull()?.substringAfterLast('/')
+    val names = known.map { it.name.lowercase() }.toSet()
+    val programs = known.mapNotNull(::program).toSet() + known.flatMap { it.packages }
+    return system.filterNot { it.name.lowercase() in names || program(it) in programs }
+}
+
+/**
+ * What one of the Droidspaces containers beside a gramarye env has, as the env's agent let the
+ * launcher read it: [menu] for the launcher's entries, [apps] from its own .desktop files.
+ */
+data class ContainerView(val menu: ContainerMenu, val apps: List<PermissionManifest>)
+
+/**
+ * Everything [view]'s container has, as its own menu would list it: the launcher's [entries]
+ * whose files are there, then its own menu entries. What a desktop running there can start.
+ */
+fun appsOf(view: ContainerView, entries: List<PermissionManifest>): List<PermissionManifest> {
+    val known = entries.filter(view.menu::has)
+    return known + newMenuApps(view.apps, known)
+}
+
+/**
+ * The apps only a container has, each set to run there: of the launcher's [entries], those
+ * whose files are in a container and not in the env, then the container's own menu entries.
+ * [listed] is what the env's menu shows; an app it has stays the env's, to be moved by hand.
+ * An app in two containers goes to the first of [views].
+ */
+fun containerApps(
+    entries: List<PermissionManifest>,
+    listed: List<PermissionManifest>,
+    views: Map<String, ContainerView>,
+): List<PermissionManifest> {
+    val found = mutableListOf<PermissionManifest>()
+    views.forEach { (name, view) ->
+        val have = listed + found
+        val ids = have.map { it.id }.toSet()
+        val known = entries.filter { it.id !in ids && view.menu.has(it) }
+        val own = newMenuApps(view.apps, have + known).filter { it.id !in ids }
+        found += (known + own).map { it.copy(container = name) }
+    }
+    return found
+}

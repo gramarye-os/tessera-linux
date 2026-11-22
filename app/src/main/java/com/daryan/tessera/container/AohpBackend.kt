@@ -167,13 +167,15 @@ class AohpBackend(
      * on its standard input and no network. How the launcher reads and changes the env's system
      * (what is installed, its menus, its config files), which it has no other way to reach. A
      * session like any other, over pipes; what it prints on either stream comes back together.
+     * With a [container] the script runs in that Droidspaces container instead, which is how the
+     * launcher reads what a container has.
      * Null when the env's agent can't be reached or the script outlasts [timeoutSeconds].
      */
-    fun run(script: String, root: Boolean = false, input: ByteArray? = null, timeoutSeconds: Long = 60): Ran? {
+    fun run(script: String, root: Boolean = false, input: ByteArray? = null, timeoutSeconds: Long = 60, container: String? = null): Ran? {
         val session = Session(id = "env${RUNS.incrementAndGet()}", term = "dumb")
         val app = PermissionManifest(
             id = "env-run", name = "env", exec = listOf("/bin/sh", "-c", script),
-            permissions = Permissions(root = root),
+            permissions = Permissions(root = root), container = container,
         )
         return try {
             val spec = buildLaunch(app, session)
@@ -211,13 +213,13 @@ class AohpBackend(
         run("python3 /opt/tessera/v4l_links.py --cameras", root = true, timeoutSeconds = 15)
             ?.takeIf { it.code == 0 }?.let { HostDevices.cameras(it.text) }.orEmpty()
 
-    /** Which of [paths] (absolute) exist in the env; null when it couldn't be asked. */
-    fun existing(paths: Collection<String>): Set<String>? {
+    /** Which of [paths] (absolute) exist in the env, or in [container]; null when it couldn't be asked. */
+    fun existing(paths: Collection<String>, container: String? = null): Set<String>? {
         val wanted = paths.filter { p -> p.startsWith("/") && p.none { it == '\n' || it == '\u0000' } }.distinct()
         if (wanted.isEmpty()) return emptySet()
         val script = "for p in ${wanted.joinToString(" ") { shellQuote(it) }}; do " +
             "if [ -e \"\$p\" ] || [ -L \"\$p\" ]; then echo \"$EXISTS_MARK\$p\"; fi; done; exit 0"
-        val ran = run(script, timeoutSeconds = 30)?.takeIf { it.code == 0 } ?: return null
+        val ran = run(script, timeoutSeconds = 30, container = container)?.takeIf { it.code == 0 } ?: return null
         return ran.text.lineSequence().filter { it.startsWith(EXISTS_MARK) }
             .map { it.removePrefix(EXISTS_MARK) }.filterTo(mutableSetOf()) { it in wanted }
     }

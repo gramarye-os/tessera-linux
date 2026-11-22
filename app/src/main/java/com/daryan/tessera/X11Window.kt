@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -386,7 +387,12 @@ class X11Window : MainActivity.MainActivityTagged() {
             override val session: StateFlow<RunningSession?> = container.sessions.sessions
                 .map { list -> list.firstOrNull { X11Server.windowTag(it.session) == sessionTag } }
                 .stateIn(lifecycleScope, SharingStarted.Eagerly, sessionTag?.let { container.sessions.forWindowTag(it) })
-            override val apps: StateFlow<List<PermissionManifest>> get() = container.launcherApps
+            // A desktop in a container of the env's has that system's apps: the launcher's list
+            // has those only where the env lacks them.
+            override val apps: StateFlow<List<PermissionManifest>> =
+                combine(session, container.launcherApps, container.containerApps) { s, all, byContainer ->
+                    s?.app?.container?.let { byContainer[it] } ?: all
+                }.stateIn(lifecycleScope, SharingStarted.Eagerly, container.launcherApps.value)
             private val id get() = session.value?.session?.id
             private val desktop get() = id?.let { container.sessions.desktop(it) }
             private val prefs = getSharedPreferences(DESKTOP_PREFS, MODE_PRIVATE)

@@ -492,6 +492,9 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
                                 val undo = snackbar.showSnackbar("Deleted ${app.name}", actionLabel = "Undo", duration = SnackbarDuration.Short)
                                 if (undo == SnackbarResult.ActionPerformed) vm.saveShortcut(shortcut)
                             }
+                        } else if (app.container != null) {
+                            // Uninstalls work in the env, which may have a package of the same name.
+                            scope.launch { snackbar.showSnackbar("${app.name} is in ${app.container}; remove it there") }
                         // Flathub apps have no Debian packages, and were turned away here as part of the system.
                         } else if (app.packages.isEmpty() && app.flatpak == null && !SystemApps.isSystemApp(app)) {
                             scope.launch { snackbar.showSnackbar("${app.name} is part of the Linux system and can't be uninstalled") }
@@ -711,6 +714,7 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
             appName = app.name,
             current = app.container,
             offered = offeredContainers,
+            inEnv = vm.homeContainer(app.id) == null,
             onSave = { vm.setContainer(app, it) },
             onDismiss = { containerApp = null },
         )
@@ -954,11 +958,13 @@ fun LauncherApp(vm: LauncherViewModel = viewModel()) {
     // Keyed by app: opening another app while one sheet is still sliding away gets a sheet of
     // its own, rather than taking over the closing one (whose end would then close it too).
     apps.firstOrNull { it.id == openApp?.id }?.let { app -> key(app.id) {
+        val installed = vm.installed(app, status, mode)
         AppSheet(
             app = app,
             backend = vm.backend(mode) ?: vm.backend(BackendMode.PROOT)!!,
-            blocker = blocker,
-            installed = vm.installed(app, status, mode),
+            // Installs go into the env: an app sent to a container that lacks it can't be offered one.
+            blocker = blocker ?: app.container?.takeIf { installed == false }?.let { "Not installed in $it" },
+            installed = installed,
             customTabs = customTabs,
             onToggleTab = { vm.tabStore.toggle(it, app.id) },
             // One desktop at a time: opening it again goes back to the one running.
