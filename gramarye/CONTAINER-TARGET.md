@@ -117,8 +117,8 @@ because the Droidspaces daemon runs on the phone's side. The setup also turns on
 - util-linux (`unshare`, `mount`, `setpriv`) and coreutils (`base64`). Same as upstream asks.
 - Tessera's GUI helpers (`GUI_HELPER_PACKAGES`): `dbus-x11`, `pulseaudio` or PipeWire,
   `python3-xlib`, `python3-pyatspi`, `at-spi2-core`, `xsettingsd`, and
-  `matchbox-window-manager` for single apps. The env has matchbox; the rest was not checked,
-  neither in the env's template nor in the upstream XFCE image.
+  `matchbox-window-manager` for single apps. The env's template has all of them. The upstream
+  XFCE image was not checked.
 - For the GPU: our Mesa tarball. Builds exist for Debian trixie and Fedora 44. Other distros
   need their own build, or run in software.
 - Debian or Ubuntu family if the Store is to install into it (apt), as upstream.
@@ -143,8 +143,17 @@ unchanged, on a Saga:
 - The env sees the container's processes (it shares the phone's PID namespace), which is what
   the task manager needs. The task manager itself was not looked at.
 
-Not done yet: sound, a desktop entry, the launcher sending `TESSERA3`, the present-hold check
-for the container's Mesa, piped (non-terminal) sessions through `droidspaces run`.
+- The launcher's own scripts go to the container too: after `apt install` there, the Apps list
+  showed the new programs. So piped sessions work through `droidspaces run`.
+- Tessera's built-in Desktop runs in the container once its packages are there (`xfwm4`,
+  `xfconf`, `thunar`, ...): `xfwm4` is the window manager and stays up, windows have title
+  bars and float, the taskbar lists them, and the GPU is used (FD725).
+- Sound is connected end to end in that session: the container's PulseAudio has the
+  `launcher-audio` FIFO open, and while a test tone played Android showed a started AudioTrack
+  of the Tessera app. Whether it is audible was not checked by ear.
+
+Not done yet: the launcher sending `TESSERA3`, the present-hold check for the container's
+Mesa, binding the env's `/opt/tessera` into the container.
 
 ## Security
 
