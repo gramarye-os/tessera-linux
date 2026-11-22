@@ -60,6 +60,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.daryan.tessera.MouseButton
 import com.daryan.tessera.ScaleRestart
+import com.daryan.tessera.BackAction
 import com.daryan.tessera.TouchMode
 import com.daryan.tessera.UsbState
 import com.daryan.tessera.X11Actions
@@ -506,12 +508,53 @@ private fun KeysPage(actions: X11Actions) {
 
 @Composable
 private fun InputPage(actions: X11Actions) {
-    InputChoices(
-        mode = actions.touchMode(),
-        onMode = actions::setTouchMode,
-        longPress = actions.longPressRightClick(),
-        onLongPress = actions::setLongPressRightClick,
+    // Each app keeps the mode picked here; the launcher's menu sets the one the others use.
+    var own by remember { mutableStateOf(actions.ownTouchMode()) }
+    key(own) {
+        InputChoices(
+            mode = actions.touchMode(),
+            onMode = { actions.setTouchMode(it); own = true },
+            longPress = actions.longPressRightClick(),
+            onLongPress = actions::setLongPressRightClick,
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text(
+            if (own) "This app keeps its own mode." else "The mode you pick here is kept for this app alone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (own) TextButton(onClick = { actions.resetTouchMode(); own = false }) { Text("Same as other apps") }
+    }
+    Spacer(Modifier.height(16.dp))
+    BackChoices(actions)
+}
+
+/** What the phone's Back button does in this app (#40). A keyboard that's up still closes first. */
+@Composable
+private fun BackChoices(actions: X11Actions) {
+    var current by remember { mutableStateOf(actions.backAction()) }
+    Text("Back button", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+    Text(
+        "Kept for this app. When the keyboard is up, Back closes it first.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 4.dp),
     )
+    BackAction.entries.forEach { a ->
+        Row(
+            verticalAlignment = Alignment.Top,
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .clickable { current = a; actions.setBackAction(a) }.padding(vertical = 8.dp),
+        ) {
+            RadioButton(selected = current == a, onClick = null, modifier = Modifier.padding(top = 2.dp, end = 8.dp))
+            Column {
+                Text(a.label, style = MaterialTheme.typography.titleSmall)
+                Text(a.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
 }
 
 /**

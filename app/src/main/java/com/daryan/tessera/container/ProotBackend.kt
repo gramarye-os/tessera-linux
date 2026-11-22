@@ -84,6 +84,10 @@ class ProotBackend(
             "it isn't installed in PRoot's Linux system (each engine has its own). " +
                 "Install it from Flathub again here, or switch to the Chroot engine."
         }
+        // A runtime's files are PRoot's stand-ins for hard links, symlinks into Flatpak's store. One
+        // whose target is gone is still listed, but nothing can run it, and PRoot's own word for
+        // the first program it can't start is only "'/usr/bin/env' not found" (#11).
+        check(exists("$rootfs${ref.runtimeDir}/bin/env")) { Flatpak.damagedRuntime(ref) }
         val skeleton = FlatpakSkeleton.ensure(paths.flatpakSkeleton)
         val argv = buildList {
             add(paths.proot.invariantSeparatorsPath)
@@ -99,9 +103,16 @@ class ProotBackend(
             add("--cwd=/home/user")
             bind("$rootfs${ref.runtimeDir}", "/usr")
             bind("$rootfs${ref.appDir}", "/app")
+            // zypak's stand-ins; a Chromium browser's (cobalt starts those) passes --no-sandbox.
+            val cobalt = exists("$rootfs${ref.appDir}/bin/${FlatpakSkeleton.COBALT}")
+            val wrapper = if (cobalt) FlatpakSkeleton.CHROMIUM_STUB else FlatpakSkeleton.ZYPAK_STUB
             FlatpakSkeleton.ZYPAK_WRAPPERS.filter { exists("$rootfs${ref.appDir}/bin/$it") }.forEach {
-                bind(File(skeleton, FlatpakSkeleton.ZYPAK_STUB).invariantSeparatorsPath, "/app/bin/$it")
+                bind(File(skeleton, wrapper).invariantSeparatorsPath, "/app/bin/$it")
             }
+            if (exists("$rootfs${ref.appDir}/bin/${FlatpakSkeleton.ZYPAK_HELPER}")) {
+                bind(File(skeleton, FlatpakSkeleton.ZYPAK_HELPER_STUB).invariantSeparatorsPath, "/app/bin/${FlatpakSkeleton.ZYPAK_HELPER}")
+            }
+            if (cobalt) bind(flatpakInfo(ref).invariantSeparatorsPath, "/.flatpak-info")
             if (ref.glDir != null && ref.glMount != null) bind("$rootfs${ref.glDir}", ref.glMount)
             // Flatpak's store hard-links every file; PRoot (--link2symlink) made those symlinks
             // to absolute paths in the container, which must resolve here too.
@@ -131,6 +142,17 @@ class ProotBackend(
         return LaunchSpec(argv, paths.prootEnv(), paths.filesDir.invariantSeparatorsPath)
     }
 
+    /** [ref]'s /.flatpak-info ([Flatpak.info]), written where PRoot can bind it from. */
+    private fun flatpakInfo(ref: FlatpakRef): File {
+        val file = File(paths.filesDir, "flatpak-info/${ref.app}")
+        val text = Flatpak.info(ref)
+        if (!file.isFile || file.readText() != text) {
+            file.parentFile?.mkdirs()
+            file.writeText(text)
+        }
+        return file
+    }
+
     private fun MutableList<String>.bind(host: String, guest: String = host) {
         add(if (host == guest) "--bind=$host" else "--bind=$host:$guest")
     }
@@ -153,6 +175,9 @@ private val SANDBOX_OFF = mapOf(
     "MOZ_DISABLE_UTILITY_SANDBOX" to "1",
     // Electron turns this into --no-sandbox itself; it has no MOZ_-style per-process switches.
     "ELECTRON_DISABLE_SANDBOX" to "1",
+    // Qt's web engine is Chromium too, with a variable of its own: Angelfish, and any Qt app with
+    // a web view, died the same way, "terminated with signal 5" (#27).
+    "QTWEBENGINE_DISABLE_SANDBOX" to "1",
 )
 
 /**
@@ -183,7 +208,9 @@ internal fun guestEnv(app: PermissionManifest, session: Session): Map<String, St
     put("HOME", if (p.root) "/root" else "/home/user")
     put("USER", if (p.root) "root" else "user")
     put("PATH", ContainerPaths.GUEST_PATH)
+    // The GUI wrapper switches to the phone's language when the guest has its locale.
     put("LANG", "C.UTF-8")
+    putAll(GuestLocale.env())
     put("TERM", session.term)
     put("TMPDIR", "/tmp")
     // Inherited by everything the session starts, daemons that detach from its process tree
@@ -222,6 +249,10 @@ internal fun guestEnv(app: PermissionManifest, session: Session): Map<String, St
             put("GSK_RENDERER", "cairo")
         }
         if (session.theme) putAll(ThemeFiles.ENV)
+        // "Open in Android", an app like any other to Linux (AndroidHandoff), ahead of the rest.
+        put("XDG_DATA_DIRS", "${AndroidHandoff.SHARE}:" + (get("XDG_DATA_DIRS") ?: "/usr/local/share:/usr/share"))
+        // What xdg-open and many programs run for a link when nothing else is set up.
+        if (session.androidLinks) put("BROWSER", AndroidHandoff.OPENER)
     }
     if (p.audio && p.display && session.display != null) {
         // The session's own PulseAudio, started by guestCommand; see AudioPipe for the rest. A
@@ -234,7 +265,14 @@ internal fun guestEnv(app: PermissionManifest, session: Session): Map<String, St
         // ran dry each time and played 21 ms of silence every 85: choppy sound. 110 was the
         // least that left no gaps.
         put("PULSE_LATENCY_MSEC", "120")
+        if (p.microphone) {
+            // The session's PulseAudio gets a source fed by Android (MicPipe), the one apps record
+            // from unless they pick another; without it they'd record the session's own playback.
+            put("LAUNCHER_MIC", "1")
+            put("PULSE_SOURCE", MIC_SOURCE_NAME)
+        }
     }
     if (session.flatpak) put("TESSERA_FLATPAK", "1")
+    if (session.composite) put("TESSERA_COMPOSITE", "1")
     session.adb?.let { put(PhoneAdb.ENV, it) }
 }

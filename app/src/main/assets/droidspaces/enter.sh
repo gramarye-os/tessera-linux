@@ -7,7 +7,7 @@
 # Droidspaces v7 rejects any individual argument longer than 8192 bytes.
 # Decoded SETTINGS are shell assignments, one per line:
 #   BINDS, DEVICES, USB_ALL, GPU_DEVICE, X11, RUN_AS_ROOT, APP_UID, NO_NET, NET_GROUPS, GUEST_ENV, CMD
-# Flatpak launches additionally set FLATPAK_MODE and FP_RUNTIME, FP_APP, FP_GL, FP_GL_MOUNT.
+# Flatpak launches additionally set FLATPAK_MODE and FP_RUNTIME, FP_APP, FP_GL, FP_GL_MOUNT, FP_INFO.
 # They come from root's command line, not a file in the session's folder: apps run as the uid
 # that owns those folders, so one could rewrite the next session's file before this script, as
 # root, read it.
@@ -188,9 +188,8 @@ DEV_GROUPS=$({
   printf '%s\n' "$DEVICES"
   if [ "$USB_ALL" = 1 ]; then find /dev/bus/usb -type c 2>/dev/null; ls /dev/ttyACM* 2>/dev/null; fi
 } | while IFS= read -r d; do
-  # Of device nodes under /dev only (of a granted folder, the nodes in it): the group of anything
-  # else in the list is no device's. And never root's (0): /dev/null and /dev/pts are root's, and
-  # with that group the app reads what the system keeps from other users.
+  # Path sanitation: only device nodes under /dev count (for a folder, the nodes in it),
+  # and never group 0 (root) or 1000 (system).
   case "$d" in /dev/?*) ;; *) continue ;; esac
   case "/$d/" in */../*|*/./*) continue ;; esac
   if [ -d "$d" ]; then find "$d" \( -type c -o -type b \) -exec stat -c %g {} + 2>/dev/null || true
@@ -203,7 +202,7 @@ if [ -n "$GROUPS_LIST" ]; then GROUP_ARG="--groups=$GROUPS_LIST"; else GROUP_ARG
 # Flatpak apps need a separate root (runtime at /usr, app at /app). Build it in this launch's
 # private /tmp and pass through only the values assembled from the app manifest/session.
 if [ "${FLATPAK_MODE:-}" = 1 ]; then
-  export FLATPAK_MODE FP_RUNTIME FP_APP FP_GL FP_GL_MOUNT BINDS DEVICES USB_ALL GPU_DEVICE X11 APP_UID
+  export FLATPAK_MODE FP_RUNTIME FP_APP FP_GL FP_GL_MOUNT FP_INFO BINDS DEVICES USB_ALL GPU_DEVICE X11 APP_UID
   export NET_GROUPS GUEST_ENV CMD GROUPS_LIST
   exec $SETSID /bin/sh "$FLATPAK_SCRIPT"
 fi

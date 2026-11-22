@@ -169,9 +169,8 @@ DEV_GROUPS=$({
   # Android itself opened and which system services trust.
   if [ "$USB_ALL" = 1 ]; then find /dev/bus/usb -type c 2>/dev/null; ls /dev/ttyACM* 2>/dev/null; fi
 } | while IFS= read -r d; do
-  # Of device nodes under /dev only (of a granted folder, the nodes in it): the group of anything
-  # else in the list is no device's. And never root's (0): /dev/null and /dev/pts are root's, and
-  # with that group the app reads what the system keeps from other users.
+  # Path sanitation: only device nodes under /dev count (for a folder, the nodes in it),
+  # and never group 0 (root) or 1000 (system).
   case "$d" in /dev/?*) ;; *) continue ;; esac
   case "/$d/" in */../*|*/./*) continue ;; esac
   if [ -d "$d" ]; then find "$d" \( -type c -o -type b \) -exec stat -c %g {} + 2>/dev/null || true
