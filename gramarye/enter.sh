@@ -282,6 +282,12 @@ DEV_GROUPS=$({
   fi
 done | grep -vx -e 0 -e 1000 | sort -u | tr '\n' ',' | sed 's/,$//')
 [ -n "$DEV_GROUPS" ] && GROUPS_LIST=${GROUPS_LIST:+$GROUPS_LIST,}$DEV_GROUPS
+# The GPU's nodes are in every app's /dev (above). In the env anyone may open them, and nothing
+# is added here. In a Droidspaces container they belong to a group of Droidspaces' own
+# (root:droidspaces-gpu, 0660), so the app is given that group, or it would draw in software.
+GPU_GROUPS=$(find /dev/kgsl-3d0 /dev/dri /dev/dma_heap \( -type c -o -type b \) ! -perm -006 \
+  -exec stat -c %g {} + 2>/dev/null | grep -vx -e 0 -e 1000 | sort -u | tr '\n' ',' | sed 's/,$//')
+[ -n "$GPU_GROUPS" ] && GROUPS_LIST=${GROUPS_LIST:+$GROUPS_LIST,}$GPU_GROUPS
 if [ -n "$GROUPS_LIST" ]; then GROUP_ARG="--groups=$GROUPS_LIST"; else GROUP_ARG=--clear-groups; fi
 
 if [ "${FLATPAK_MODE:-}" = 1 ]; then echo "Flathub apps are not supported in a gramarye env yet" >&2; exit 1; fi
