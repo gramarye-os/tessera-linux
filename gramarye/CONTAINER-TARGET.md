@@ -162,8 +162,18 @@ unchanged, on a Saga:
   in that container; the tile says which. On the Saga, with no default file, the Desktop button
   came back (its packages are only in the container), the Desktop opened there, and its Start
   menu listed the container's apps.
+- A desktop on the env's X server was white, for two reasons that are not about containers,
+  both fixed. xfwm4's compositor, which the desktop's helper turned on, shows nothing on that
+  server: windows and background stay blank. The helper leaves it off there (`TESSERA_ENV_X`),
+  also for a home that had it on. And the background picture never left the launcher's copy of
+  the session folder: the mirror sends it now, to an agent that says `mirror=2`. On the Saga the
+  desktop then showed the phone's wallpaper, and an xterm from its Start menu was drawn.
 
 Known gaps:
+
+- A file dropped onto the desktop from Android is still not sent to the env's side.
+- The env's X server shows nothing a compositing window manager paints. Why is not looked
+  into; the desktop goes without window shadows there.
 
 - "Gramarye env" in the dialog means no choice. Such an app follows the env's default file,
   when there is one, so it cannot be held in the env against that file.
