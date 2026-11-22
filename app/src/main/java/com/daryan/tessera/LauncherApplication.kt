@@ -129,13 +129,19 @@ class LauncherApplication : LorieApp() {
             // Our swipe-in panel replaces Termux:X11's extra-keys bar.
             edit.putBoolean("showAdditionalKbd", false)
         }
+        if (applied < 3) {
+            // The screen ends above the phone's keyboard while that is open. Left at its full
+            // height, the part shown follows the pointer, which a tap in direct touch doesn't
+            // move: a terminal's last line stayed under the keyboard.
+            edit.putBoolean("Reseed", true)
+        }
         edit.putInt(X11_DEFAULTS_VERSION, CURRENT_X11_DEFAULTS).apply()
     }
 
     private companion object {
         const val X11_DEFAULTS_APPLIED = "tessera_x11_defaults" // version 1, before versioning
         const val X11_DEFAULTS_VERSION = "tessera_x11_defaults_version"
-        const val CURRENT_X11_DEFAULTS = 2
+        const val CURRENT_X11_DEFAULTS = 3
     }
 }
 

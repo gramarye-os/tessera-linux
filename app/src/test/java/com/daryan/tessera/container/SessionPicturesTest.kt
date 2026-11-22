@@ -50,4 +50,10 @@ class SessionPicturesTest {
         assertTrue("os.environ.get(\"$ENV_SIDE_X_ENV\")" in DESKTOP_HELPER)
         assertTrue("settle_compositor()" in DESKTOP_HELPER)
     }
+
+    @Test fun `the desktop's helper fits a window that leaves its maximized state`() {
+        // It hears of the change, then looks once the window manager has resized the window.
+        assertTrue("e.atom == A(\"_NET_WM_STATE\") and e.window.id in fitted" in DESKTOP_HELPER)
+        assertTrue("keep_in_screen(wid, ax, ay, aw, ah)" in DESKTOP_HELPER)
+    }
 }
