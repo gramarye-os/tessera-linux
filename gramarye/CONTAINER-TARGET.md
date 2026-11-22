@@ -168,12 +168,25 @@ unchanged, on a Saga:
   also for a home that had it on. And the background picture never left the launcher's copy of
   the session folder: the mirror sends it now, to an agent that says `mirror=2`. On the Saga the
   desktop then showed the phone's wallpaper, and an xterm from its Start menu was drawn.
+- Three faults of a desktop under a finger, none about containers, fixed and checked on the
+  Saga. A double click opened nothing in the pointer modes: GTK wants both clicks within 5
+  pixels, about 0.6 mm there, and the session's xsettings now allow 24. The phone's keyboard
+  hid a terminal's last line: the screen now ends above the keyboard while it is open
+  (Termux:X11's `Reseed`, on by default). And a window let out of its maximized state came back
+  wider than the screen (xterm 746 pixels, Thunar 662, on 568): the desktop's helper shrinks it
+  to fit.
 
 Known gaps:
 
 - A file dropped onto the desktop from Android is still not sent to the env's side.
 - The env's X server shows nothing a compositing window manager paints. Why is not looked
   into; the desktop goes without window shadows there.
+- A window's border, the grip to resize it by, is 11 pixels: about 1.3 mm on the Saga. A
+  drag that starts on it resizes; a finger seldom starts on it.
+- One finger does not scroll an xterm in any touch mode: the swipe selects text.
+- With two apps open on a phone held upright, the dock's keyboard button is pushed off its end.
+- After the keyboard is opened from the side panel and closed with back, keys do not reach
+  the window until it is touched.
 
 - "Gramarye env" in the dialog means no choice. Such an app follows the env's default file,
   when there is one, so it cannot be held in the env against that file.
