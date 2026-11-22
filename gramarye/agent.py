@@ -11,6 +11,9 @@ over the loopback interface the env shares with Android. One connection is one s
                                               the same session on a terminal of its own, of that
                                               size (0 0: none, pipes), spoken to in frames: see
                                               serve_session()
+    TESSERA3 <token> <session id> <container> <settings> <rows> <columns>\n
+                                              as TESSERA2, in the Droidspaces container of that
+                                              name (- for the env itself): see session_argv()
     TESSERAX1 <token> <session id> <display> <window tag> <android package>\n
                                               the session's X server, started on the env's side;
                                               answered READY or FAILED <why>, stopped on hang-up
@@ -62,6 +65,15 @@ PAIR_TRIES = 5
 CODE = re.compile(rb"^[0-9]{6}$")
 pair_lock = threading.Lock()
 ENTER = os.environ.get("TESSERA_ENTER", "/opt/tessera/enter.sh")
+# A session can run in a Droidspaces container on this phone instead of in the env: the agent
+# then starts enter.sh there with "droidspaces run". The container has to have this env's
+# /opt/tessera and XROOT bound at the same paths (gramarye/CONTAINER-TARGET.md). Which one, when
+# the launcher's line doesn't say (TESSERA1 and TESSERA2), is the one name in this file; with no
+# such file those sessions run in the env.
+DROIDSPACES = os.environ.get("TESSERA_DROIDSPACES", "droidspaces")
+CONTAINER_FILE = os.environ.get("TESSERA_CONTAINER_FILE", "/etc/tessera/container")
+# A container's name goes on a command line run as root: a plain word, and never an option.
+CONTAINER = re.compile(rb"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 MAX_LINE = 4 * 1024 * 1024
 CHUNK = 6000  # enter.sh joins its arguments again; one argument may not exceed 128 KiB
 SID = re.compile(rb"^[A-Za-z0-9_-]{1,32}$")
@@ -613,6 +625,30 @@ def handle_x(conn, peer, parts):
         x_stop(sid)
 
 
+def default_container():
+    """The container sessions run in when the launcher names none, or None: the env itself."""
+    try:
+        with open(CONTAINER_FILE, "rb") as f:
+            name = f.read().strip()
+    except OSError:
+        return None
+    if not CONTAINER.match(name):
+        if name:
+            log("ignoring", CONTAINER_FILE, "which holds no container name")
+        return None
+    return name.decode()
+
+
+def session_argv(sid, chunks, container=None):
+    """What runs a session: enter.sh here in the env, or the same script in a container, started
+    there by Droidspaces. Its arguments are the same either way; Droidspaces takes no single
+    argument over 8192 bytes, which CHUNK keeps under."""
+    argv = ["/bin/sh", ENTER, sid] + chunks
+    if container is None:
+        return argv
+    return [DROIDSPACES, "--name=" + container, "run", "--"] + argv
+
+
 def set_size(fd, rows, cols):
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -849,7 +885,8 @@ def handle(conn, peer):
             log("pairing", "done" if answer.startswith(b"OK") else answer.decode(), "for", peer)
             conn.sendall(answer + b"\n")
             return
-        shape = {b"TESSERA1": 4, b"TESSERA2": 6, b"TESSERAX1": 6, b"TESSERAX2": 6, b"TESSERAPING": 2}.get(parts[0] if parts else b"")
+        shape = {b"TESSERA1": 4, b"TESSERA2": 6, b"TESSERA3": 7, b"TESSERAX1": 6, b"TESSERAX2": 6,
+                 b"TESSERAPING": 2}.get(parts[0] if parts else b"")
         if shape != len(parts) or not token or not hmac.compare_digest(parts[1], token):
             log("refused", peer)
             return
@@ -860,13 +897,28 @@ def handle(conn, peer):
         if parts[0] in (b"TESSERAX1", b"TESSERAX2"):
             handle_x(conn, peer, parts)
             return
+        if parts[0] == b"TESSERA3":
+            # The container's name comes third; the rest is TESSERA2's.
+            named = parts.pop(3)
+            if named == b"-":
+                container = None
+            elif CONTAINER.match(named):
+                container = named.decode()
+            else:
+                conn.sendall(b"tessera-agent: bad container name\n")
+                return
+            parts[0] = b"TESSERA2"
+        else:
+            container = default_container()
         sid, payload = parts[2], parts[3]
         if not SID.match(sid) or not B64.match(payload):
             conn.sendall(b"tessera-agent: bad session id or settings\n")
             return
         conn.settimeout(None)
         chunks = [payload[i:i + CHUNK].decode() for i in range(0, len(payload), CHUNK)]
-        argv = ["/bin/sh", ENTER, sid.decode()] + chunks
+        argv = session_argv(sid.decode(), chunks, container)
+        if container is not None:
+            log("session", sid.decode(), "in container", container)
         env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
         if parts[0] == b"TESSERA2":
             if not (parts[4].isdigit() and parts[5].isdigit() and len(parts[4]) <= 4 and len(parts[5]) <= 4):

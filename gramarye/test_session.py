@@ -27,10 +27,17 @@ apps = {
 }
 for name, body in apps.items():
     open(os.path.join(work, 'app-%s.sh' % name), 'w').write(body + '\n')
+# A stand-in for Droidspaces too: notes how it was called, then runs what follows "--" here.
+ds = os.path.join(work, 'droidspaces')
+ds_log = os.path.join(work, 'ds.log')
+open(ds, 'w').write('#!/bin/sh\necho "$1 $2 $3" >> %s\nshift 3\nexec "$@"\n' % ds_log)
+os.chmod(ds, 0o755)
+container_file = os.path.join(work, 'container')
 agent_log = open(os.path.join(work, 'agent.log'), 'w')
 agent = subprocess.Popen([sys.executable, os.path.join(here, 'agent.py')], stdout=agent_log, stderr=agent_log,
                          env=dict(os.environ, TESSERA_PORT=str(port), TESSERA_TOKEN_FILE=os.path.join(work, 'token'),
-                                  TESSERA_ENTER=os.path.join(work, 'enter.sh')))
+                                  TESSERA_ENTER=os.path.join(work, 'enter.sh'),
+                                  TESSERA_DROIDSPACES=ds, TESSERA_CONTAINER_FILE=container_file))
 for _ in range(50):
     try:
         socket.create_connection(('127.0.0.1', port), timeout=0.2).close(); break
@@ -42,15 +49,24 @@ def check(name, cond, detail=''):
     global ok
     print(('ok   ' if cond else 'FAIL ') + name + ('' if cond else '  ' + detail)); ok = ok and cond
 
-def hello(sid, token='sesame'):
+def hello(sid, token='sesame', container=None):
     path = os.path.join(work, 'hello-' + sid)
-    open(path, 'w').write('TESSERA2 %s %s QQ==' % (token, sid))
+    if container is None:
+        open(path, 'w').write('TESSERA2 %s %s QQ==' % (token, sid))
+    else:
+        open(path, 'w').write('TESSERA3 %s %s %s QQ==' % (token, sid, container))
     return path
+
+def ds_calls():
+    try:
+        return open(ds_log).read().splitlines()
+    except OSError:
+        return []
 
 class Term:
     """The relay on a terminal of its own, as the launcher runs it."""
-    def __init__(self, sid, rows, cols, token='sesame'):
-        self.hello = hello(sid, token)
+    def __init__(self, sid, rows, cols, token='sesame', container=None):
+        self.hello = hello(sid, token, container)
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.execv(relay, [relay, str(port), self.hello])
@@ -130,6 +146,44 @@ try:
     t = Term('size', 24, 80, token='wrong')
     rc = t.wait()
     check('refusal is reported', rc == 1 and b'refused this launch' in t.out, 'rc=%r out=%r' % (rc, t.out))
+
+    # 7. a session in a container: started through Droidspaces, and otherwise the same session
+    check('no session went through Droidspaces so far', ds_calls() == [], repr(ds_calls()))
+    t = Term('size', 30, 90, container='box')
+    check('container session has its terminal', t.until(b'30 90\r\n'), repr(t.out))
+    os.write(t.fd, b'go\r')
+    rc = t.wait()
+    check('container session ends with its exit code', rc == 7, 'rc=%r' % rc)
+    check('it was started by Droidspaces in that container', ds_calls() == ['--name=box run --'], repr(ds_calls()))
+
+    # 8. "-" names the env itself
+    t = Term('size', 30, 90, container='-')
+    os.write(t.fd, b'go\r')
+    rc = t.wait()
+    check('"-" runs the session in the env', rc == 7 and len(ds_calls()) == 1, 'rc=%r calls=%r' % (rc, ds_calls()))
+
+    # 9. a name that could be read as an option, or as more than a name, starts nothing
+    for bad in ('--help', 'a/b', 'x' * 65):
+        t = Term('size', 24, 80, container=bad)
+        rc = t.wait()
+        check('container name %r is refused' % bad[:8], rc != 7 and len(ds_calls()) == 1, 'rc=%r calls=%r' % (rc, ds_calls()))
+
+    # 10. the env's default container, for a launcher that names none
+    open(container_file, 'w').write('homebox\n')
+    t = Term('size', 30, 90)
+    os.write(t.fd, b'go\r')
+    rc = t.wait()
+    check('TESSERA2 follows the default container', rc == 7 and ds_calls()[-1:] == ['--name=homebox run --'], 'rc=%r calls=%r' % (rc, ds_calls()))
+    t = Term('size', 30, 90, container='-')
+    os.write(t.fd, b'go\r')
+    rc = t.wait()
+    check('"-" still means the env', rc == 7 and len(ds_calls()) == 2, 'rc=%r calls=%r' % (rc, ds_calls()))
+    open(container_file, 'w').write('--help\n')
+    t = Term('size', 30, 90)
+    os.write(t.fd, b'go\r')
+    rc = t.wait()
+    check('a default that is no name is ignored', rc == 7 and len(ds_calls()) == 2, 'rc=%r calls=%r' % (rc, ds_calls()))
+    os.unlink(container_file)
 finally:
     agent.terminate(); agent.wait()
     subprocess.call(['pkill', '-f', work])
