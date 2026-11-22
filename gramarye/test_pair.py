@@ -12,8 +12,14 @@ with socket.socket() as s:
     s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]
 open(os.path.join(work, 'token'), 'w').write('sesame\n')
 open(os.path.join(work, 'caps'), 'w').write('vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host\n')
+# A stand-in for Droidspaces: answers "--json show" with what ds.json holds, and fails without it.
+ds = os.path.join(work, 'droidspaces')
+ds_json = os.path.join(work, 'ds.json')
+open(ds, 'w').write('#!/bin/sh\n[ "$1 $2" = "--json show" ] && exec cat %s\nexit 2\n' % ds_json)
+os.chmod(ds, 0o755)
 env = dict(os.environ, TESSERA_PORT=str(port), TESSERA_TOKEN_FILE=os.path.join(work, 'token'),
-           TESSERA_CAPS_FILE=os.path.join(work, 'caps'), TESSERA_PAIR_FILE=os.path.join(work, 'pair'))
+           TESSERA_CAPS_FILE=os.path.join(work, 'caps'), TESSERA_PAIR_FILE=os.path.join(work, 'pair'),
+           TESSERA_DROIDSPACES=ds)
 agent_py = os.path.join(here, 'agent.py')
 agent = subprocess.Popen([sys.executable, agent_py], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 for _ in range(50):
@@ -67,6 +73,16 @@ try:
 
     check('ping with the token', ask('TESSERAPING sesame') == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host')
     check('ping with a wrong token gets nothing', ask('TESSERAPING wrong') == '')
+
+    # The running containers follow what the env can do; a name that is none is left out.
+    open(ds_json, 'w').write('{"running":[{"name":"box","pid":1},{"name":"--help"},{"name":"other.one"}],"total":3}\n')
+    time.sleep(5.5)  # the agent asks Droidspaces again after five seconds
+    r = ask('TESSERAPING sesame')
+    check('ping names the running containers', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host ds=box,other.one', r)
+    open(ds_json, 'w').write('not json\n')
+    time.sleep(5.5)
+    r = ask('TESSERAPING sesame')
+    check('an answer that is no list names none', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host', r)
 finally:
     agent.terminate(); agent.wait()
     import shutil; shutil.rmtree(work, ignore_errors=True)

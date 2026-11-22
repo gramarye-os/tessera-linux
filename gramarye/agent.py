@@ -24,7 +24,8 @@ and two that are no session:
 
     TESSERAPING <token>\n                     answered PONG <what this env can do> (- when that
                                               isn't known): the launcher asking whether its
-                                              token still opens this env
+                                              token still opens this env. A last word
+                                              ds=<name>,<name> lists the running containers
     TESSERAPAIR <code>\n                      answered OK <port> <token> <what this env can do>,
                                               or NO <why>: how a launcher gets the token, see pair()
 
@@ -38,6 +39,7 @@ import errno
 import fcntl
 import glob
 import hmac
+import json
 import mmap
 import os
 import re
@@ -832,6 +834,32 @@ def caps():
         return None
 
 
+# The running containers, and when they were last asked for: a launcher pings often.
+containers_lock = threading.Lock()
+containers_seen = [0.0, []]
+
+
+def containers():
+    """The Droidspaces containers a session could be started in now: the running ones, by name.
+    None where there is no Droidspaces, or it doesn't answer."""
+    with containers_lock:
+        if time.monotonic() - containers_seen[0] < 5:
+            return containers_seen[1]
+        names = []
+        try:
+            out = subprocess.run([DROIDSPACES, "--json", "show"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, timeout=2).stdout
+            for one in json.loads(out.decode("utf-8", "replace")).get("running", []):
+                name = str(one.get("name", "")).encode()
+                if CONTAINER.match(name) and name.decode() not in names:
+                    names.append(name.decode())
+        except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+            names = []
+        # The launcher reads one short line: a phone with more containers than this names the first.
+        containers_seen[0], containers_seen[1] = time.monotonic(), names[:8]
+        return containers_seen[1]
+
+
 def write_private(path, text):
     tmp = "%s.%s" % (path, os.urandom(4).hex())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -892,6 +920,11 @@ def handle(conn, peer):
             return
         if parts[0] == b"TESSERAPING":
             known = caps()
+            # What the env can do, and after it the containers a session can be sent to now.
+            # A launcher older than that word keeps what it knew, as for any word it can't read.
+            running = containers()
+            if known is not None and running:
+                known = ("%s ds=%s" % (known, ",".join(running))).strip()
             conn.sendall(("PONG %s" % ("-" if known is None else known)).rstrip().encode() + b"\n")
             return
         if parts[0] in (b"TESSERAX1", b"TESSERAX2"):
