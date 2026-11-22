@@ -157,12 +157,21 @@ unchanged, on a Saga:
   On the Saga, with no default file: xterm set to the container opened with the prompt
   `user@trixie-ds`, and UXTerm, left alone, opened in the env (`user@localhost`), side by side.
 
+- The launcher reads each container the agent offers (its programs, its packages, its
+  `.desktop` files) with scripts the agent runs there, and lists what the env lacks, set to run
+  in that container; the tile says which. On the Saga, with no default file, the Desktop button
+  came back (its packages are only in the container), the Desktop opened there, and its Start
+  menu listed the container's apps.
+
 Known gaps:
 
 - "Gramarye env" in the dialog means no choice. Such an app follows the env's default file,
   when there is one, so it cannot be held in the env against that file.
-- The launcher lists the env's apps only. An app sent to a container has to be installed
-  there too; the Desktop button showed up only while the container was the default.
+- Installs and removals work in the env only. An app that runs in a container is installed
+  and removed there by hand; the launcher refuses both for it.
+- An app both systems have is listed once, as the env's; "Runs in…" moves it.
+- The containers are read again when the launcher comes back, at most once a minute, so an
+  app installed in one from a terminal can take that long to show.
 - A session left open when the agent restarts keeps its X server unit; nothing stops it.
 
 Not done yet: the present-hold check for the container's Mesa, binding the env's
