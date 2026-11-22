@@ -123,6 +123,29 @@ because the Droidspaces daemon runs on the phone's side. The setup also turns on
   need their own build, or run in software.
 - Debian or Ubuntu family if the Store is to install into it (apt), as upstream.
 
+## First results (2026-11-21, branch `container-target`)
+
+The agent change is in: `session_argv()`, the `TESSERA3` line, and `/etc/tessera/container`
+as the default for a launcher that names no container. With that file set and the launcher
+unchanged, on a Saga:
+
+- xterm opened from Tessera runs in the container: prompt `user@trixie-ds`, and matchbox, the
+  session's D-Bus, the watchers and the session's environment are all there, as the session's
+  user. `enter.sh` ran unchanged.
+- Simpler than proposed above: the env's X folder is bound at the **same path** in the container
+  (`/var/lib/tessera/x`), and the container has `enter.sh` at `/opt/tessera`. So `XDIR` and the
+  rest of the settings need no rewrite. (In the test the container had its own copy of
+  `enter.sh`; binding the env's `/opt/tessera` is still to do.)
+- The GPU needed a fix in `enter.sh`: Droidspaces gives the GPU's nodes to a group of its own,
+  and the app's user did not have it (llvmpipe). With the group added: FD725, 121 FPS.
+- A session ends cleanly both ways, by its program exiting and by the launcher hanging up:
+  nothing of it is left in the container.
+- The env sees the container's processes (it shares the phone's PID namespace), which is what
+  the task manager needs. The task manager itself was not looked at.
+
+Not done yet: sound, a desktop entry, the launcher sending `TESSERA3`, the present-hold check
+for the container's Mesa, piped (non-terminal) sessions through `droidspaces run`.
+
 ## Security
 
 - **The container's domain is permissive.** Droidspaces upstream says its domain cannot be made
