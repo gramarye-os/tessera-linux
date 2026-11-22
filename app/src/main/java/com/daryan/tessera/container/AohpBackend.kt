@@ -23,6 +23,9 @@ import java.net.Socket
  * says its launch script gives each app a /dev of its own, with the app's devices and none of the
  * env's others.
  */
+/** Set (to 1) in a session whose X server is the env's, started by its agent, and not this app's. */
+const val ENV_SIDE_X_ENV = "TESSERA_ENV_X"
+
 data class AohpTarget(
     val port: Int,
     val token: String,
@@ -32,11 +35,14 @@ data class AohpTarget(
     val privateDev: Boolean = false,
     /** The Droidspaces containers the env's agent can start an app in, by name; as it last said. */
     val containers: List<String> = emptyList(),
+    /** How much of a session's folder the env's agent carries ([SessionMirror]): from 2, the desktop's pictures too. */
+    val mirror: Int = 1,
 ) {
     /** What the env can do, as the words [parse] reads after the token. */
     val caps: String
         get() = listOfNotNull(
             vulkanIcd?.let { "vk=$it" }, glDriver?.let { "gl=$it" }, "x=host".takeIf { hostX }, "dev=private".takeIf { privateDev },
+            "mirror=$mirror".takeIf { mirror > 1 },
             containers.takeIf { it.isNotEmpty() }?.joinToString(",", prefix = "ds="),
         ).joinToString(" ")
 
@@ -68,6 +74,7 @@ data class AohpTarget(
                     word.startsWith("gl=") && WORD.matches(value) -> target.copy(glDriver = value)
                     word == "x=host" -> target.copy(hostX = true)
                     word == "dev=private" -> target.copy(privateDev = true)
+                    word.startsWith("mirror=") && value.toIntOrNull()?.let { it in 1..99 } == true -> target.copy(mirror = value.toInt())
                     word.startsWith("ds=") && value.split(',').all(PermissionManifest.CONTAINER::matches) ->
                         target.copy(containers = value.split(',').distinct())
                     else -> return null
@@ -256,7 +263,7 @@ class AohpBackend(
                 throw IOException("the env could not start the X server: ${reply ?: "no answer (is its agent older than this app?)"}")
             }
             // From here the connection carries the session's folder both ways.
-            return RemoteXServer(socket, SessionMirror(socket, paths.x11SocketDir(session)).apply { start() })
+            return RemoteXServer(socket, SessionMirror(socket, paths.x11SocketDir(session), pictures = target.mirror >= 2).apply { start() })
         } catch (e: IOException) {
             runCatching { socket.close() }
             throw e
@@ -296,6 +303,8 @@ class AohpBackend(
         val env = guestEnv(app, session).toMutableMap()
         val windowed = p.display && session.display != null
         val envSideX = windowed && target.hostX
+        // The desktop's helper keeps xfwm4's compositor off on that server: see DESKTOP_HELPER.
+        if (envSideX) env[ENV_SIDE_X_ENV] = "1"
         // Hardware graphics come from the env's Mesa: name its driver instead of the bundle's.
         if (session.gpu && target.vulkanIcd != null) {
             BUNDLE_ONLY.forEach { env.remove(it) }

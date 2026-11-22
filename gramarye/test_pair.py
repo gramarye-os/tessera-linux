@@ -71,18 +71,18 @@ try:
     open(path, 'w').write('%s %d 0\n' % (code, time.time() - 1))
     check('a code runs out', 'run out' in ask('TESSERAPAIR ' + code))
 
-    check('ping with the token', ask('TESSERAPING sesame') == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host')
+    check('ping with the token', ask('TESSERAPING sesame') == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host mirror=2')
     check('ping with a wrong token gets nothing', ask('TESSERAPING wrong') == '')
 
     # The running containers follow what the env can do; a name that is none is left out.
     open(ds_json, 'w').write('{"running":[{"name":"box","pid":1},{"name":"--help"},{"name":"other.one"}],"total":3}\n')
     time.sleep(5.5)  # the agent asks Droidspaces again after five seconds
     r = ask('TESSERAPING sesame')
-    check('ping names the running containers', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host ds=box,other.one', r)
+    check('ping names the running containers', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host mirror=2 ds=box,other.one', r)
     open(ds_json, 'w').write('not json\n')
     time.sleep(5.5)
     r = ask('TESSERAPING sesame')
-    check('an answer that is no list names none', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host', r)
+    check('an answer that is no list names none', r == 'PONG vk=/usr/share/vulkan/icd.d/x.json gl=kgsl x=host mirror=2', r)
 finally:
     agent.terminate(); agent.wait()
     import shutil; shutil.rmtree(work, ignore_errors=True)

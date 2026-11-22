@@ -56,8 +56,8 @@ data class DesktopItem(val name: String, val path: String, val kind: String, val
     val isLink get() = kind == "link"
     val isFolder get() = kind == "dir"
 }
-private const val WALLPAPER_NAME = "desktop-wallpaper"
-private const val PATCH_NAME = "desktop-icons"
+internal const val WALLPAPER_NAME = "desktop-wallpaper"
+internal const val PATCH_NAME = "desktop-icons"
 
 /**
  * A desktop session's side of things, in its X11 directory [dir]: what the taskbar asks of
@@ -427,6 +427,9 @@ import json, os, re, select, shlex, shutil, subprocess, sys, time
 xdir = sys.argv[1]
 cmd_path = os.path.join(xdir, "launcher-desktop")
 theme = os.environ.get("TESSERA_THEME")
+# The X server is a gramarye env's own, started by its agent: it shows nothing of what xfwm4's
+# compositor paints, so windows and background alike stay blank while that is on.
+env_x = os.environ.get("TESSERA_ENV_X") == "1"
 current = os.path.join(theme, "desktop", "current") if theme else None
 null = subprocess.DEVNULL
 
@@ -477,7 +480,7 @@ def first_run():
         ("snap_width", "int", 24),
         ("double_click_action", "string", "maximize"),
         ("borderless_maximize", "bool", "true"),
-        ("use_compositing", "bool", "true"),
+        ("use_compositing", "bool", "false" if env_x else "true"),
         ("show_frame_shadow", "bool", "true"),
         ("show_popup_shadow", "bool", "true"),
         ("show_dock_shadow", "bool", "false"),
@@ -487,6 +490,16 @@ def first_run():
         xfconf(prop, kind, value)
     os.makedirs(os.path.dirname(marker), exist_ok=True)
     open(marker, "w").close()
+
+def settle_compositor():
+    # Every time, and not with the first run's settings: a home set up before this, or by a
+    # desktop on another engine, has the compositor on.
+    if not env_x or not shutil.which("xfconf-query"):
+        return
+    for _ in range(20):
+        if xfconf("use_compositing", "bool", "false") == 0:
+            return
+        time.sleep(0.5)
 
 def stamp(path):
     try:
@@ -987,6 +1000,7 @@ except OSError:
 cmd = os.open(cmd_path, os.O_RDWR | os.O_NONBLOCK)
 pending = b""
 first_run()
+settle_compositor()
 listed_stamp = None
 listed_at = 0
 due = None

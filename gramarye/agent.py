@@ -24,7 +24,9 @@ and two that are no session:
 
     TESSERAPING <token>\n                     answered PONG <what this env can do> (- when that
                                               isn't known): the launcher asking whether its
-                                              token still opens this env. A last word
+                                              token still opens this env. After it,
+                                              mirror=<n> says what mirror() carries (2: the
+                                              desktop's pictures too), and a last word
                                               ds=<name>,<name> lists the running containers
     TESSERAPAIR <code>\n                      answered OK <port> <token> <what this env can do>,
                                               or NO <why>: how a launcher gets the token, see pair()
@@ -106,6 +108,12 @@ MIRROR_SOUND = "launcher-audio"
 SOUND_PIPE = 16 * 1024
 MAX_FILE = 8 * 1024 * 1024
 MAX_NAME = 1024
+# The desktop's pictures: its background and the icons drawn over it, which the launcher puts in
+# the X folder itself for the desktop's helper to show. Raw pixels, a screenful each, so a frame
+# may be that large. MIRROR_VERSION is what a ping says of all this (mirror=<n>): 2 takes them.
+MIRROR_PICTURE = re.compile(r"desktop-(wallpaper|icons)-[0-9]{1,9}\.raw\Z")
+MAX_FRAME = 64 * 1024 * 1024
+MIRROR_VERSION = 2
 ABI_DIR = {"aarch64": "arm64", "x86_64": "x86_64", "armv7l": "arm", "armv8l": "arm", "i686": "x86"}
 
 
@@ -270,7 +278,7 @@ def frames(buf):
         if len(head) != 3 or len(head[0]) != 1 or not head[1].isdigit() or not head[2].isdigit():
             raise ValueError("bad frame header")
         n, m = int(head[1]), int(head[2])
-        if n > MAX_NAME or m > MAX_FILE:
+        if n > MAX_NAME or m > MAX_FRAME:
             raise ValueError("frame too large")
         end_at = nl + 1 + n + m
         if len(buf) < end_at:
@@ -284,11 +292,14 @@ def frame(verb, name, data=b""):
 
 
 def tree_parts(name):
-    """The path a launcher names inside the theme folder, as its parts; None when it isn't one."""
+    """The path a launcher names inside the theme folder, or one of the desktop's pictures beside
+    it, as its parts; None when it is neither."""
     try:
         parts = name.decode("utf-8").split("/")
     except UnicodeDecodeError:
         return None
+    if len(parts) == 1 and MIRROR_PICTURE.match(parts[0]):
+        return parts
     if not 2 <= len(parts) <= 16 or parts[0] != MIRROR_TREE:
         return None
     if any(p in ("", ".", "..") or "\0" in p or len(p.encode()) > 255 for p in parts):
@@ -495,7 +506,9 @@ def mirror(conn, sid, base):
                          U <pipe>  what the session plays: the sound its sound server wrote
                                    into its pipe, in whole 16-bit stereo frames
                          S <mark>  answers the launcher's S: everything before it is done
-      from the launcher  P <path>  a file of the session's theme, under tessera-theme/
+      from the launcher  P <path>  a file of the session's theme, under tessera-theme/, or one
+                                   of the desktop's pictures (MIRROR_PICTURE), sent before
+                                   the command that names it
                          D <path>  one that is gone, or a folder of them
                          L <pipe>  bytes for a helper's command pipe (window commands)
                          S <mark>
@@ -553,7 +566,7 @@ def mirror(conn, sid, base):
                                 pipe_write(base_fd, name.decode("ascii"), data)
                         elif verb == b"S":
                             if put:
-                                log("x", sid, "mirror: %d theme files" % put)
+                                log("x", sid, "mirror: %d files" % put)
                                 put = 0
                             conn.sendall(frame(b"S", name))
             elif ev:
@@ -923,8 +936,10 @@ def handle(conn, peer):
             # What the env can do, and after it the containers a session can be sent to now.
             # A launcher older than that word keeps what it knew, as for any word it can't read.
             running = containers()
-            if known is not None and running:
-                known = ("%s ds=%s" % (known, ",".join(running))).strip()
+            if known is not None:
+                known = ("%s mirror=%d" % (known, MIRROR_VERSION)).strip()
+                if running:
+                    known = "%s ds=%s" % (known, ",".join(running))
             conn.sendall(("PONG %s" % ("-" if known is None else known)).rstrip().encode() + b"\n")
             return
         if parts[0] in (b"TESSERAX1", b"TESSERAX2"):

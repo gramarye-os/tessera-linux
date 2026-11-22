@@ -26,6 +26,12 @@ internal class MirrorFrame(val verb: Char, val name: String, val data: ByteArray
         const val MAX_NAME = 1024
         const val MAX_DATA = 8 * 1024 * 1024
 
+        /** The most one of the desktop's pictures may be to go to the env: raw pixels, a large screenful. */
+        const val MAX_PICTURE = 64 * 1024 * 1024
+
+        /** The desktop's pictures as [DesktopFiles] names them in the session's folder (gramarye/agent.py knows them too). */
+        val PICTURE = Regex("($WALLPAPER_NAME|$PATCH_NAME)-[0-9]{1,9}\\.raw")
+
         fun header(verb: Char, nameLength: Int, dataLength: Int) =
             "$verb $nameLength $dataLength\n".toByteArray(Charsets.US_ASCII)
 
@@ -50,12 +56,14 @@ internal class MirrorFrame(val verb: Char, val name: String, val data: ByteArray
  * can't reach. So the env's agent sends what the helpers write, and it lands in [dir] as if
  * they had written it here; and what the launcher puts in [dir] is sent to the agent: bytes
  * written to the command pipes, and the theme's files whenever `portal`, written last, changes.
+ * The desktop's pictures (its background, the icons over it) go too, where the agent takes them
+ * ([pictures]): each before the command that tells the desktop's helper to show it.
  * The session's sound comes the same way: the env's sound server plays into a pipe there, the
  * agent sends what it plays, and it goes into a pipe of the same name here, which [AudioPipe]
  * plays from as it does for the other engines.
  * Everything else in the launcher works on [dir] as it does for any other engine.
  */
-internal class SessionMirror(private val socket: Socket, private val dir: File) {
+internal class SessionMirror(private val socket: Socket, private val dir: File, private val pictures: Boolean = false) {
     private val input = BufferedInputStream(socket.getInputStream())
     private val output = socket.getOutputStream()
     private val acks = LinkedBlockingQueue<String>()
@@ -66,6 +74,9 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
     /** The theme's files as last sent, by path under [dir], and `portal`'s stamp then. */
     private val sent = HashMap<String, Long>()
     private var themeStamp = -1L
+
+    /** The desktop's pictures as last sent, by name. */
+    private val sentPictures = HashMap<String, Long>()
     private var marks = 0
 
     /**
@@ -228,6 +239,10 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
      * Reads what the launcher writes to the helpers' command pipes and sends it on; between
      * that, looks whether the theme changed. The pipes are open for writing too, so that the
      * launcher's writers always find a reader and a read never sees an end.
+     *
+     * A command may name a picture the launcher wrote just before it. So the pictures are
+     * looked for after the pipes are read and sent before what was read: a picture a command
+     * names is then on the env's side when the command gets there.
      */
     private fun pump() {
         val pipes = PIPES.mapNotNull { name ->
@@ -237,14 +252,18 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
         }
         val polled = pipes.map { (_, fd) -> StructPollfd().apply { this.fd = fd; events = OsConstants.POLLIN.toShort() } }.toTypedArray()
         val buffer = ByteArray(4096)
+        val lines = ArrayList<Pair<String, ByteArray>>()
         try {
             while (!closed && !socket.isClosed) {
                 if (polled.isEmpty()) Thread.sleep(POLL_MS.toLong()) else pollQuietly(polled)
+                lines.clear()
                 polled.forEachIndexed { i, p ->
                     if (p.revents.toInt() and OsConstants.POLLIN == 0) return@forEachIndexed
                     val n = try { Os.read(p.fd, buffer, 0, buffer.size) } catch (_: ErrnoException) { 0 }
-                    if (n > 0) send('L', pipes[i].first, buffer, n)
+                    if (n > 0) lines += pipes[i].first to buffer.copyOf(n)
                 }
+                if (pictures) pushPictures()
+                lines.forEach { (name, bytes) -> send('L', name, bytes) }
                 pushTheme()
             }
         } catch (e: IOException) {
@@ -260,6 +279,25 @@ internal class SessionMirror(private val socket: Socket, private val dir: File) 
             Os.poll(fds, timeoutMs)
         } catch (_: ErrnoException) {
             fds.forEach { it.revents = 0 }
+        }
+    }
+
+    /** Sends the desktop's pictures that are new ([DesktopFiles] gives each a name of its own), and says which are gone. */
+    private fun pushPictures() {
+        val files = dir.listFiles { f -> f.isFile && MirrorFrame.PICTURE.matches(f.name) }.orEmpty().associateBy { it.name }
+        (sentPictures.keys - files.keys).forEach { send('D', it) }
+        sentPictures.keys.retainAll(files.keys)
+        files.forEach { (name, file) ->
+            val now = stamp(file)
+            if (sentPictures[name] == now) return@forEach
+            if (file.length() > MirrorFrame.MAX_PICTURE) {
+                Log.w(TAG, "$name is too large to send to the env")
+                sentPictures[name] = now
+                return@forEach
+            }
+            val bytes = runCatching { file.readBytes() }.getOrNull() ?: return@forEach
+            send('P', name, bytes)
+            sentPictures[name] = now
         }
     }
 
