@@ -152,8 +152,21 @@ unchanged, on a Saga:
   `launcher-audio` FIFO open, and while a test tone played Android showed a started AudioTrack
   of the Tessera app. Whether it is audible was not checked by ear.
 
-Not done yet: the launcher sending `TESSERA3`, the present-hold check for the container's
-Mesa, binding the env's `/opt/tessera` into the container.
+- The launcher side is in: the agent's ping answer ends with `ds=<name>,<name>`, the running
+  containers; an app's long-press menu then has "Runs in…", and the choice is kept per app.
+  On the Saga, with no default file: xterm set to the container opened with the prompt
+  `user@trixie-ds`, and UXTerm, left alone, opened in the env (`user@localhost`), side by side.
+
+Known gaps:
+
+- "Gramarye env" in the dialog means no choice. Such an app follows the env's default file,
+  when there is one, so it cannot be held in the env against that file.
+- The launcher lists the env's apps only. An app sent to a container has to be installed
+  there too; the Desktop button showed up only while the container was the default.
+- A session left open when the agent restarts keeps its X server unit; nothing stops it.
+
+Not done yet: the present-hold check for the container's Mesa, binding the env's
+`/opt/tessera` into the container.
 
 ## Security
 
